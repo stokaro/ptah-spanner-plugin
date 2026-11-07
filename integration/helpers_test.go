@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -30,6 +31,15 @@ import (
 // a database of its own on that endpoint, which the emulator creates on the
 // first connection, so tests share no state.
 const testURLVariable = "PTAH_SPANNER_TEST_URL"
+
+// testInstanceVariable names the emulator's REST address of the instance
+// behind testURLVariable, such as
+// http://127.0.0.1:9020/v1/projects/emulator-project/instances/test-instance.
+// The instance holds at most 100 databases, and a run of the suite takes
+// nearly all of them, so where the variable is set freshDatabase drops each
+// database when its test ends. Without it, every database stays until the
+// emulator stops.
+const testInstanceVariable = "PTAH_SPANNER_TEST_INSTANCE_URL"
 
 // hostFeatures are the features startProvider's host negotiates.
 func hostFeatures() []string {
@@ -71,15 +81,46 @@ func startCommonObjectsProvider(c *qt.C) *providerruntime.Client {
 }
 
 // freshDatabase returns the address of a database no other test uses, on the
-// endpoint testURLVariable names.
+// endpoint testURLVariable names. Where testInstanceVariable is set, the
+// database is dropped when the test ends, after the cleanups registered later,
+// such as a connection's.
 func freshDatabase(c *qt.C) string {
 	c.Helper()
 	base := os.Getenv(testURLVariable)
 	c.Assert(base, qt.Not(qt.Equals), "", qt.Commentf("%s must name the Spanner emulator the live tests run against", testURLVariable))
 	parsed, err := url.Parse(base)
 	c.Assert(err, qt.IsNil)
-	parsed.Path = "/t" + hex.EncodeToString([]byte(rand.Text())[:6])
+	name := "t" + hex.EncodeToString([]byte(rand.Text())[:6])
+	parsed.Path = "/" + name
+	if instance := os.Getenv(testInstanceVariable); instance != "" {
+		c.Cleanup(func() { dropDatabase(c, instance, name) })
+	}
 	return parsed.String()
+}
+
+// dropDatabase drops the database name of the emulator instance at the REST
+// address instance. A database nothing connected to was never created, so
+// the emulator does not find it, which is not a failure. It runs as a
+// cleanup, so it reports a failure and returns rather than stopping. The
+// name is never used again: PGAdapter keeps its sessions of a dropped
+// database, and a connection to the name would reach them.
+func dropDatabase(c *qt.C, instance, name string) {
+	c.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// #nosec G704 -- instance is the emulator's REST address the test environment names, and name a database this test generated
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, instance+"/databases/"+name, nil)
+	if !c.Check(err, qt.IsNil) {
+		return
+	}
+	// #nosec G704 -- the request goes to the emulator the test environment names; see above
+	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	if !c.Check(err, qt.IsNil, qt.Commentf("dropping database %s", name)) {
+		return
+	}
+	defer func() { _ = response.Body.Close() }()
+	c.Check([]int{http.StatusOK, http.StatusNotFound}, qt.Contains, response.StatusCode,
+		qt.Commentf("dropping database %s answered %s", name, response.Status))
 }
 
 // withSearchPath pins the address to the public schema. A host that still

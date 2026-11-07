@@ -150,13 +150,17 @@ jobs:
     env:
       GOWORK: 'off'
       # Each test takes a database of its own on this endpoint; the emulator
-      # creates a database on the first connection to it.
+      # creates a database on the first connection to it. The instance holds
+      # at most 100 databases, and a run takes nearly all of them, so each
+      # test drops its own through the emulator's REST port when it ends.
       PTAH_SPANNER_TEST_URL: spanner://127.0.0.1:5432/ptah_test?sslmode=disable
+      PTAH_SPANNER_TEST_INSTANCE_URL: http://127.0.0.1:9020/v1/projects/emulator-project/instances/test-instance
     services:
       spanner:
         image: ${{ matrix.line.image }}
         ports:
           - 5432:5432
+          - 9020:9020
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

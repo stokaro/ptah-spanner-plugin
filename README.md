@@ -273,11 +273,14 @@ GOWORK=off make lint
 
 The live tests need a Spanner emulator behind PGAdapter. Each test takes a
 database of its own on the endpoint, which the emulator creates on the first
-connection:
+connection. The emulator's instance holds at most 100 databases, and a run
+takes nearly all of them, so name the instance's REST address and each test
+drops its database when it ends:
 
 ```sh
-docker run -d --name spanner -p 5432:5432 gcr.io/cloud-spanner-pg-adapter/pgadapter-emulator:v0.56.2
+docker run -d --name spanner -p 5432:5432 -p 9020:9020 gcr.io/cloud-spanner-pg-adapter/pgadapter-emulator:v0.56.2
 PTAH_SPANNER_TEST_URL='spanner://127.0.0.1:5432/ptah_test?sslmode=disable' \
+PTAH_SPANNER_TEST_INSTANCE_URL=http://127.0.0.1:9020/v1/projects/emulator-project/instances/test-instance \
 PTAH_HOST_TEST_BIN=/path/to/ptah \
   GOWORK=off go test -tags integration -race -count=1 ./integration
 ```
