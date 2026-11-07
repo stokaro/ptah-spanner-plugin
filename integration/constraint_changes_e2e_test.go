@@ -209,7 +209,7 @@ func TestHostGeneratesMigrationsWithForeignKeysE2E(t *testing.T) {
 	migrations := c.TempDir()
 	output, err := hostCommand(c, "migrations", "generate", "--db-url", address, "--schema-file", filepath.Join(dir, "schema.sql"),
 		"--migrations-dir", migrations, "--name", "init")
-	skipOnOldHost(c, output, err, "provider planner requires captured table state", "the host's prediction of a provider table's foreign keys")
+	skipOnOldHost(c, output, err, "provider planner requires captured table state", "the rollback prediction of provider foreign keys (stokaro/ptah#4204 S79)")
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	down, err := filepath.Glob(filepath.Join(migrations, "*_init.down.sql"))
 	c.Assert(err, qt.IsNil)

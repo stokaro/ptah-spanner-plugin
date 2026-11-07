@@ -25,9 +25,17 @@ is evidence about the PostgreSQL interface, not about the managed service.
   `public` when the request names none: every column with the type Spanner
   stores, its nullability and its stored default, the primary key in key order,
   the secondary indexes with each key's direction and NULLS ordering and
-  their `STORING` columns, and the row deletion policy with the interval in
-  the spelling Spanner stored. The index Spanner builds for a foreign key is
-  Spanner's, not the user's, and is left out.
+  their `STORING` columns, the row deletion policy with the interval in the
+  spelling Spanner stored, and the foreign keys and `CHECK` constraints. A
+  foreign key carries its columns in key order, the table and columns it
+  references and its rules; a `CHECK` carries its clause as Spanner keeps it,
+  such as `(score >= '0'::bigint)` for `score >= 0`. The indexes Spanner builds
+  for a foreign key, on either table, are Spanner's, not the user's, and are
+  left out, and so are the CHECKs it keeps for `NOT NULL` columns. A key's
+  NULLS ordering is stated only where it is not the default for its direction
+  (`NULLS LAST` ascending, `NULLS FIRST` descending). Foreign keys and CHECKs
+  reach a Ptah that reads constraints (provider contract 25.28); an older Ptah
+  gets the read refused for a table that holds one.
 - **Views and sequences.** A read reports each view with its query as Spanner
   stores it, and each sequence with its counter start. A view is created with
   `CREATE VIEW`, replaced with `CREATE OR REPLACE VIEW` and dropped with `DROP
@@ -40,8 +48,8 @@ is evidence about the PostgreSQL interface, not about the managed service.
   stores. A sequence that skips a range is refused by the read.
 - **Refusals instead of omissions.** A read fails, with a reason that names the
   object, when the schema holds something the provider does not describe yet:
-  a foreign key or CHECK constraint, a generated or identity column, a
-  filtered, search or interleaved index, or an interleaved table. Ptah plans
+  a generated or identity column, a filtered, search or interleaved index, or
+  an interleaved table. Ptah plans
   to create what a read leaves out, so leaving such an object out would plan a
   change the database refuses.
 - **Tables without a primary key.** Spanner keys a table created without a
@@ -62,14 +70,30 @@ is evidence about the PostgreSQL interface, not about the managed service.
     A foreign key on `jsonb`, `numeric`, `real` or an array column is refused,
     as are `ON UPDATE`, deferral and every `ON DELETE` but `CASCADE`.
   - An index keeps each key's direction and NULLS ordering and its `INCLUDE`
-    (`STORING`) columns. A changed index is dropped and created again under
-    its name.
+    (`STORING`) columns. A changed index, a changed NULLS ordering included,
+    is dropped and created again under its name.
+  - A kept table's foreign keys and `CHECK` constraints are compared with the
+    ones it holds: one declared and not held is added with `ALTER TABLE ...
+    ADD CONSTRAINT`, one held and not declared is dropped with `ALTER TABLE ...
+    DROP CONSTRAINT`, and a changed one is dropped and added again. A drop
+    comes before any column of the table changes and before the removal of a
+    table the key references, since Spanner refuses either while the
+    constraint stands; an addition comes after the column changes and the
+    creation of a table it references. A column added with a `CHECK` or a
+    foreign key is added first and its constraints follow it. A `CHECK` is
+    compared with the clause Spanner keeps by reading both into the form the
+    server stores (literals cast to the column's type, `IN` as `= ANY` of an
+    array, `BETWEEN` as two comparisons), so `score >= 0` converges with
+    `(score >= '0'::bigint)`; a text the provider cannot read is replaced.
   - A column of a kept table changes with `ALTER COLUMN`: its type, between
     `character varying` of any length and `bytea`, which is all Spanner changes
     in place; its default; and `NOT NULL`. A `NOT NULL` column without a
     default is added nullable and then made `NOT NULL`, because Spanner refuses
     to add it otherwise.
-  - A dropped table, and a dropped column, lose their indexes first.
+  - A dropped table, and a dropped column, lose their indexes first. A dropped
+    table loses its foreign keys first too, after the tables the plan creates,
+    so `ptah migrations generate` writes a down file that drops every key
+    before the tables.
   - A row deletion policy, `TTL INTERVAL '30 days' ON created_at`, follows
     `CREATE TABLE`'s column list, and a kept table's policy changes in place
     with `ADD TTL`, `ALTER TTL` or `DROP TTL`, after the table's column
@@ -188,14 +212,14 @@ is evidence about the PostgreSQL interface, not about the managed service.
   counts the tables that hold one. A SQL schema document's `TTL` clause is
   refused: Ptah does not hand a provider a table clause of a SQL document yet.
 
-What is not served yet, in the order it is planned: reading foreign keys and
-CHECK constraints back and changing them on a kept table (a read of a table
-that holds one is refused, and `migrations generate` refuses a schema with a
-foreign key, whose down file must drop it first). The plan and the
-measurements behind it are kept with
-#4204. Creating a table with a foreign key or a table `CHECK`, and writing a
-read as SQL with `ptah db read`, need a Ptah release with
-[Ptah #5559](https://github.com/stokaro/ptah/pull/5559).
+Creating a table with a foreign key or a table `CHECK`, and writing a read as
+SQL with `ptah db read`, need a Ptah release with
+[Ptah #5559](https://github.com/stokaro/ptah/pull/5559). Reading, comparing and
+changing foreign keys and CHECKs need a Ptah of provider contract 25.28
+([Ptah #5561](https://github.com/stokaro/ptah/pull/5561)). A down file of a
+schema whose foreign key is a table constraint needs a Ptah that predicts the
+key for the rollback plan; Ptah refuses to plan that down file until then. The
+plan and the measurements behind it are kept with #4204.
 
 ## Use it
 
