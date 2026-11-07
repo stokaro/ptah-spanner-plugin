@@ -45,12 +45,14 @@ DROP TABLE t;
 	"1700000002_risky.down.sql": "ALTER TABLE ev ADD TTL INTERVAL '30 days' ON at;\n",
 }
 
-// lintFinding is one finding of a lint report: its rule, the base name of its
-// file and its line.
+// lintFinding is one finding of a lint report: its rule, its severity and
+// message, the base name of its file and its line.
 type lintFinding struct {
-	Rule string `json:"rule"`
-	File string `json:"file"`
-	Line int    `json:"line"`
+	Rule     string `json:"rule"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	File     string `json:"file"`
+	Line     int    `json:"line"`
 }
 
 func (f lintFinding) String() string {
@@ -63,6 +65,30 @@ func (f lintFinding) String() string {
 // read, is left out of the report.
 func lintReport(c *qt.C, args ...string) ([]string, error) {
 	c.Helper()
+	report, err := lintFindings(c, args...)
+	findings := make([]string, 0, len(report))
+	for _, finding := range report {
+		findings = append(findings, finding.String())
+	}
+	return findings, err
+}
+
+// lintMessages is lintReport with each finding's severity and message after
+// its rule.
+func lintMessages(c *qt.C, args ...string) ([]string, error) {
+	c.Helper()
+	report, err := lintFindings(c, args...)
+	findings := make([]string, 0, len(report))
+	for _, finding := range report {
+		findings = append(findings, finding.String()+" "+finding.Severity+": "+finding.Message)
+	}
+	return findings, err
+}
+
+// lintFindings runs one lint command of the host with this provider
+// selected, in JSON, and returns its findings and the error it exited with.
+func lintFindings(c *qt.C, args ...string) ([]lintFinding, error) {
+	c.Helper()
 	host, manifest := hostManifest(c)
 	ctx, cancel := context.WithTimeout(c.Context(), 2*time.Minute)
 	defer cancel()
@@ -74,11 +100,7 @@ func lintReport(c *qt.C, args ...string) ([]string, error) {
 		Findings []lintFinding `json:"findings"`
 	}
 	c.Assert(json.Unmarshal(stdout.Bytes(), &report), qt.IsNil, qt.Commentf("stdout: %s\nstderr: %s", stdout.String(), stderr.String()))
-	findings := make([]string, 0, len(report.Findings))
-	for _, finding := range report.Findings {
-		findings = append(findings, finding.String())
-	}
-	return findings, runErr
+	return report.Findings, runErr
 }
 
 // The host lints a directory whose files hold rows, a rename and a view: the

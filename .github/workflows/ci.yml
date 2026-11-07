@@ -150,13 +150,17 @@ jobs:
     env:
       GOWORK: 'off'
       # Each test takes a database of its own on this endpoint; the emulator
-      # creates a database on the first connection to it.
+      # creates a database on the first connection to it. The instance holds
+      # at most 100 databases, fewer than the suite takes, so each test drops
+      # its own through the emulator's REST port when it ends.
       PTAH_SPANNER_TEST_URL: spanner://127.0.0.1:5432/ptah_test?sslmode=disable
+      PTAH_SPANNER_TEST_INSTANCE_URL: http://127.0.0.1:9020/v1/projects/emulator-project/instances/test-instance
     services:
       spanner:
         image: ${{ matrix.line.image }}
         ports:
           - 5432:5432
+          - 9020:9020
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -191,11 +195,15 @@ jobs:
       - name: Name the host commit
         if: steps.host.outputs.skip != 'true'
         run: git -C .host-contract log -1 --format='host %H %s'
-      - name: Build the host binary
+      # Both binaries the host ships: ptah, and ptah-compat, whose
+      # compatibility surface hands a Spanner address to this provider too.
+      - name: Build the host binaries
         if: steps.host.outputs.skip != 'true'
         run: |
           host_binary="$RUNNER_TEMP/ptah-contract"
+          compat_binary="$RUNNER_TEMP/ptah-compat-contract"
           CGO_ENABLED=0 go build -C .host-contract -o "$host_binary" ./cmd/ptah
-          printf 'PTAH_HOST_TEST_BIN=%s\n' "$host_binary" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 go build -C .host-contract -o "$compat_binary" ./cmd/ptah-compat
+          printf 'PTAH_HOST_TEST_BIN=%s\nPTAH_HOST_COMPAT_TEST_BIN=%s\n' "$host_binary" "$compat_binary" >> "$GITHUB_ENV"
       - if: steps.host.outputs.skip != 'true'
         run: go test -tags integration ./integration -race -count=1 -v -timeout 40m

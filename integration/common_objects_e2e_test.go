@@ -131,3 +131,24 @@ func TestHostRefusesViewsAndSequencesSpannerCannotHoldE2E(t *testing.T) {
 	c.Assert(err, qt.IsNotNil)
 	c.Assert(output, qt.Contains, `sequence "public"."skips" skips a range of values, which the provider does not describe yet`)
 }
+
+// One plan that removes a table, its index and a view that reads it drops the
+// index and the view before the table, each without CASCADE, which Spanner
+// refuses whatever the object, and nothing is left to plan. Spanner also
+// refuses to drop a table that still has an index or a view that reads it.
+func TestHostRemovesATableWithItsIndexAndViewE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	execSQL(c, address, `CREATE TABLE gone (id bigint PRIMARY KEY, kind text)`, `CREATE INDEX gone_kind ON gone (kind)`,
+		`CREATE VIEW gone_v SQL SECURITY INVOKER AS SELECT g.id FROM gone g`)
+	const kept = "CREATE TABLE kept (id bigint PRIMARY KEY);\n"
+	output, err := applySQL(c, address, kept)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Matches, `(?s).*DROP INDEX "gone_kind";\n.*DROP TABLE "gone";\n.*`)
+	c.Assert(output, qt.Matches, `(?s).*DROP VIEW "gone_v";\n.*DROP TABLE "gone";\n.*`)
+	c.Assert(output, qt.Not(qt.Contains), "CASCADE")
+	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'gone%'`), qt.HasLen, 0)
+	output, err = planSQL(c, address, kept)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+}

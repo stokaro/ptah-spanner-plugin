@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"strings"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -49,20 +50,24 @@ WHERE table_name = 'edges' AND index_name = 'PRIMARY_KEY' ORDER BY ordinal_posit
 	c.Assert(output, qt.Contains, synced)
 }
 
-// An index of a kept table that changes its direction, its stored columns or
-// its uniqueness is dropped and created again under its name.
+// An index of a kept table that changes its direction, its stored columns,
+// its uniqueness or the order of its keys is dropped and created again under
+// its name.
 func TestHostChangesIndexesOfAKeptTableE2E(t *testing.T) {
 	c := testcheck.New(t)
 	address := withSearchPath(c, freshDatabase(c))
 	const table = "CREATE TABLE t (id bigint PRIMARY KEY, a varchar(20), b bigint, c text);\n"
-	output, err := applySQL(c, address, table+"CREATE INDEX t_a ON t (a);\nCREATE INDEX t_b ON t (b);\nCREATE INDEX t_c ON t (c);\n")
+	output, err := applySQL(c, address, table+"CREATE INDEX t_a ON t (a);\nCREATE INDEX t_b ON t (b);\nCREATE INDEX t_c ON t (c);\nCREATE INDEX t_d ON t (a, b);\n")
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 
-	changed := table + "CREATE INDEX t_a ON t (a DESC);\nCREATE INDEX t_b ON t (b) INCLUDE (a, c);\nCREATE UNIQUE INDEX t_c ON t (c);\n"
+	changed := table + "CREATE INDEX t_a ON t (a DESC);\nCREATE INDEX t_b ON t (b) INCLUDE (a, c);\nCREATE UNIQUE INDEX t_c ON t (c);\nCREATE INDEX t_d ON t (b, a);\n"
 	output, err = applySQL(c, address, changed)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
-	c.Assert(output, qt.Contains, "DROP INDEX \"t_a\";\nDROP INDEX \"t_b\";\nDROP INDEX \"t_c\";\n")
-	c.Assert(output, qt.Contains, "CREATE INDEX \"t_a\" ON \"t\" (\"a\" DESC);\nCREATE INDEX \"t_b\" ON \"t\" (\"b\") INCLUDE (\"a\", \"c\");\nCREATE UNIQUE INDEX \"t_c\" ON \"t\" (\"c\");\n")
+	c.Assert(output, qt.Contains, "DROP INDEX \"t_a\";\nDROP INDEX \"t_b\";\nDROP INDEX \"t_c\";\nDROP INDEX \"t_d\";\n")
+	c.Assert(output, qt.Contains, "CREATE INDEX \"t_a\" ON \"t\" (\"a\" DESC);\nCREATE INDEX \"t_b\" ON \"t\" (\"b\") INCLUDE (\"a\", \"c\");\nCREATE UNIQUE INDEX \"t_c\" ON \"t\" (\"c\");\n"+
+		"CREATE INDEX \"t_d\" ON \"t\" (\"b\", \"a\");\n")
+	c.Assert(queryRows(c, address, `SELECT column_name FROM information_schema.index_columns WHERE table_name = 't' AND index_name = 't_d' ORDER BY ordinal_position`),
+		qt.DeepEquals, []string{"b", "a"})
 	output, err = planSQL(c, address, changed)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Contains, synced)
@@ -202,4 +207,122 @@ func TestHostRefusesDeclarationsSpannerCannotHoldE2E(t *testing.T) {
 	output, err = planSQL(c, address, "CREATE TABLE s (id bigint PRIMARY KEY, n smallint);\n")
 	c.Assert(err, qt.IsNotNil)
 	c.Assert(output, qt.Contains, `column "n" of table "s": type "smallint": Spanner stores integers as bigint only`)
+}
+
+// notNullBase is the table the NOT NULL tests start from, and notNullName the
+// column they add to it, in the YAML Ptah's built-in Spanner engine was
+// measured with.
+const (
+	notNullBase = "tables:\n  items:\n    fields:\n      id:\n        type: BIGINT\n        primary: true\n"
+	notNullName = "      name:\n        type: TEXT\n        nullable: false\n"
+)
+
+// A NOT NULL column that declares a default is added in one statement to a
+// table holding a row, which the default fills, and the next plan is synced.
+// Spanner takes the column with its default on a table with rows; it refuses
+// a NOT NULL column without one (`Cannot add NOT NULL column items.name to
+// existing table items`).
+func TestHostAddsANotNullColumnToATableWithARowE2E_HappyPath(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	execSQL(c, address, "CREATE TABLE items (id bigint PRIMARY KEY)", "INSERT INTO items (id) VALUES (1)")
+	schema := notNullBase + notNullName + "        default: \"'x'\"\n"
+	output, err := policyApply(c, address, "schema.yaml", schema, apply)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "ALTER TABLE \"items\" ADD COLUMN \"name\" TEXT NOT NULL DEFAULT 'x';\n")
+	c.Assert(queryRows(c, address, `SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'items' ORDER BY ordinal_position`),
+		qt.DeepEquals, []string{"id NO", "name NO"})
+	c.Assert(queryRows(c, address, `SELECT id, name FROM items ORDER BY id`), qt.DeepEquals, []string{"1 x"})
+	output, err = policyApply(c, address, "schema.yaml", schema, dryRun)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+}
+
+// A NOT NULL column without a default is added nullable and then made NOT
+// NULL. On a table holding a row the row has no value for it, so Spanner
+// refuses the SET NOT NULL; it runs each statement on its own, so the column
+// stays, nullable, and the next plan is the note and the SET NOT NULL alone.
+func TestHostAddsANotNullColumnToATableWithARowE2E_FailurePath(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	execSQL(c, address, "CREATE TABLE items (id bigint PRIMARY KEY)", "INSERT INTO items (id) VALUES (1)")
+	const note = "-- SPANNER: SET NOT NULL fails if any row of \"items\" holds NULL in \"name\"; the column declares no default to fill it with.\n"
+	output, err := policyApply(c, address, "schema.yaml", notNullBase+notNullName, apply)
+	c.Assert(err, qt.IsNotNil)
+	c.Assert(output, qt.Contains, "ALTER TABLE \"items\" ADD COLUMN \"name\" TEXT;\n"+note+"ALTER TABLE \"items\" ALTER COLUMN \"name\" SET NOT NULL;\n")
+	c.Assert(queryRows(c, address, `SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'items' ORDER BY ordinal_position`),
+		qt.DeepEquals, []string{"id NO", "name YES"})
+	output, err = policyApply(c, address, "schema.yaml", notNullBase+notNullName, dryRun)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, note+"ALTER TABLE \"items\" ALTER COLUMN \"name\" SET NOT NULL;\n")
+	c.Assert(output, qt.Not(qt.Contains), "ADD COLUMN")
+}
+
+// keywordColumns are columns named after the words that open a table-level
+// index on MySQL. Spanner takes each as a column name, and a type with
+// parentheses is the shape a reader of the MySQL element would turn into an
+// index named after the type, losing the column without an error.
+const keywordColumns = "id bigint PRIMARY KEY, key text, spatial varchar(32), fulltext text, index varchar(32)"
+
+// keywordRefusal is the words of a host that reads a table element of an
+// engine a provider serves as MySQL reads it: the host read these words as
+// columns for Spanner through the built-in Spanner descriptor, which the
+// deletion of the built-in engine removed.
+const keywordRefusal = "declares a table-level index on spanner rather than a column named after the word"
+
+// keywordChange names the host change the test needs.
+const keywordChange = "reading KEY, SPATIAL, FULLTEXT and INDEX as column names for an engine a provider serves"
+
+// A SQL schema document whose columns are named key, spatial, fulltext and
+// index creates those columns, and they agree with the columns Spanner gives
+// a table the same statement creates, which the next plan leaves alone.
+func TestHostCreatesColumnsNamedAfterIndexKeywordsE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	execSQL(c, address, "CREATE TABLE served ("+keywordColumns+")")
+	const schema = "CREATE TABLE served (" + keywordColumns + ");\nCREATE TABLE kw (" + keywordColumns + ");\n"
+	output, err := applySQL(c, address, schema)
+	skipOnOldHost(c, output, err, keywordRefusal, keywordChange)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "CREATE TABLE \"kw\" (\n  \"id\" bigint PRIMARY KEY NOT NULL,\n  \"key\" text,\n  \"spatial\" varchar(32),\n  \"fulltext\" text,\n  \"index\" varchar(32)\n);\n")
+	c.Assert(output, qt.Not(qt.Contains), `"served"`)
+	const columns = `SELECT column_name, spanner_type FROM information_schema.columns WHERE table_name = '%s' ORDER BY ordinal_position`
+	c.Assert(queryRows(c, address, strings.Replace(columns, "%s", "kw", 1)), qt.DeepEquals, queryRows(c, address, strings.Replace(columns, "%s", "served", 1)))
+	c.Assert(queryRows(c, address, strings.Replace(columns, "%s", "kw", 1)), qt.DeepEquals,
+		[]string{"id bigint", "key character varying", "spatial character varying(32)", "fulltext character varying", "index character varying(32)"})
+	output, err = planSQL(c, address, schema)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+}
+
+// indexCommented is a table with an index, and commented the same with a
+// comment on the index.
+const (
+	indexCommented = "CREATE TABLE u (id bigint PRIMARY KEY, n bigint);\nCREATE INDEX u_n_ix ON u (n);\n"
+	commented      = indexCommented + "COMMENT ON INDEX u_n_ix IS 'first';\n"
+)
+
+// A comment on an index is refused before a statement is sent, on a created
+// index and on a kept one, as a table's and a column's comment is: Spanner's
+// PostgreSQL interface answers COMMENT ON INDEX with `Unknown statement`.
+// Ptah's built-in Spanner engine skipped the comment with a note, and the
+// provider left it out silently, so a plan reported synced while the
+// declaration held a comment the database never would.
+func TestHostRefusesAnIndexCommentE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	const refusal = `index "u_n_ix" of table "u" has a comment; Spanner's PostgreSQL interface stores no comment`
+	output, err := applySQL(c, address, commented)
+	c.Assert(err, qt.IsNotNil)
+	c.Assert(output, qt.Contains, refusal)
+	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'u'`), qt.HasLen, 0)
+
+	output, err = applySQL(c, address, indexCommented)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	output, err = planSQL(c, address, commented)
+	c.Assert(err, qt.IsNotNil)
+	c.Assert(output, qt.Contains, refusal)
+	output, err = planSQL(c, address, indexCommented)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
 }

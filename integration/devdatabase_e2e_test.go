@@ -68,6 +68,22 @@ func TestDevDatabaseE2E_ADevDatabaseThatIsNotEmptyIsRefused(t *testing.T) {
 	c.Assert(userTables(c, dev), qt.DeepEquals, []string{"public leftover"})
 }
 
+// A dev database that holds only a view is refused too, because the cleanup
+// would drop it: the claim counts every object the provider's cleanup
+// removes, and the view is still there afterwards.
+func TestDevDatabaseE2E_ADevDatabaseHoldingOnlyAViewIsRefused(t *testing.T) {
+	c := testcheck.New(t)
+	target, dev := withSearchPath(c, freshDatabase(c)), withSearchPath(c, freshDatabase(c))
+	execSQL(c, dev, "CREATE VIEW v SQL SECURITY INVOKER AS SELECT 1 AS id")
+	path := filepath.Join(writeFiles(c, map[string]string{"schema.sql": "CREATE TABLE items (\n  id bigint NOT NULL,\n  PRIMARY KEY (id)\n);\n"}), "schema.sql")
+	output, err := hostCommand(c, "schema", "apply", "--db-url", target, "--schema-file", path, "--dev-url", dev, "--auto-approve")
+	skipOnOldHost(c, output, err, realmRefusal, realmChange)
+	c.Assert(err, qt.IsNotNil)
+	c.Assert(output, qt.Contains, `connected database is not clean: found view "v" in schema "public"`)
+	c.Assert(userTables(c, target), qt.DeepEquals, []string{"public ptah_locks"})
+	c.Assert(userTables(c, dev), qt.DeepEquals, []string{"public v"})
+}
+
 // migrations generate --replay replays the directory on the dev database,
 // plans the next migration from what the replay built, and empties the dev
 // database afterwards. The built-in engine refused every replay on Spanner,

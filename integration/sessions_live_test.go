@@ -38,6 +38,28 @@ func TestSessionsSubprocess(t *testing.T) {
 	c.Assert(client.CloseSession(c.Context(), second.GetId()), qt.IsNil)
 }
 
+// A session states that Spanner runs no schema statement inside an explicit
+// transaction, and the server refuses one there: the fact is a measurement
+// rather than a value copied from Ptah's built-in Spanner engine. The host
+// runs a plan's statements outside a transaction on that fact.
+func TestSessionsSubprocess_TheServerRefusesDDLInsideATransaction(t *testing.T) {
+	c := testcheck.New(t)
+	address := freshDatabase(c)
+	session := openSession(c, startProvider(c), address)
+	for _, capability := range []string{"ddl_inside_transaction", "transactional_ddl"} {
+		stated, established := session.GetCapabilities()[capability]
+		c.Assert(established, qt.IsTrue, qt.Commentf("capability %s", capability))
+		c.Assert(stated, qt.IsFalse, qt.Commentf("capability %s", capability))
+	}
+	conn := connect(c, address)
+	transaction, err := conn.Begin(c.Context())
+	c.Assert(err, qt.IsNil)
+	_, err = transaction.Exec(c.Context(), `CREATE TABLE in_tx (id bigint PRIMARY KEY)`)
+	c.Assert(err, qt.ErrorMatches, `.*DDL statements are only allowed outside explicit transactions.*`)
+	c.Assert(transaction.Rollback(c.Context()), qt.IsNil)
+	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_name = 'in_tx'`), qt.HasLen, 0)
+}
+
 // A refused open never quotes the address, which can carry a credential.
 func TestSessionsSubprocess_FailurePath(t *testing.T) {
 	tests := []struct {

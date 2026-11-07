@@ -183,6 +183,8 @@ func IndexRefusal(declared *protocol.DeclaredIndex) string {
 		return "is NULLS NOT DISTINCT, which a Spanner index cannot be"
 	case declared.GetInvisible():
 		return "is invisible, which a Spanner index cannot be"
+	case strings.TrimSpace(declared.GetComment()) != "":
+		return "has a comment; Spanner's PostgreSQL interface stores no comment"
 	case len(declared.GetParts()) == 0 && len(declared.GetFields()) == 0:
 		return "has no key"
 	}
