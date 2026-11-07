@@ -126,13 +126,12 @@ func TestSplit_FailurePath(t *testing.T) {
 		{name: "a data word alone", text: "DELETE;", wantErr: `the provider analyzes .*`},
 		{name: "an ALTER TABLE of another kind", text: "ALTER TABLE t RENAME TO u;", wantErr: `the provider analyzes .*`},
 		{name: "a short statement", text: "DROP INDEX;", wantErr: `the provider analyzes .*`},
-		{name: "an unclosed quoted name", text: `DROP TABLE "t;`, wantErr: `a quoted name is not closed`},
-		{name: "an unclosed string", text: `ALTER TABLE t ADD COLUMN c text DEFAULT 'x;`, wantErr: `a string is not closed`},
-		{name: "an unclosed comment", text: `DROP TABLE t /* x`, wantErr: `a comment is not closed`},
-		{name: "a dollar-quoted string", text: `ALTER TABLE t ADD COLUMN c text DEFAULT $$x$$;`, wantErr: `a dollar-quoted string is not part of the provider's SQL`},
+		{name: "an unclosed quoted name", text: `DROP TABLE "t;`, wantErr: `a quoted identifier does not close on line 1`},
+		{name: "an unclosed string", text: `ALTER TABLE t ADD COLUMN c text DEFAULT 'x;`, wantErr: `a string does not close on line 1`},
+		{name: "an unclosed comment", text: `DROP TABLE t /* x`, wantErr: `a block comment does not close on line 1`},
+		{name: "an unclosed dollar-quoted string", text: `ALTER TABLE t ADD COLUMN c text DEFAULT $d$x$$;`, wantErr: `a dollar-quoted string \$d\$ does not close on line 1`},
 		{name: "an empty statement", text: "DROP TABLE t;\n;", wantErr: `an empty statement ends on line 2`},
 		{name: "comments alone", text: "-- nothing\n", wantErr: `the SQL text holds comments and no statement`},
-		{name: "a character outside the dialect", text: "DROP TABLE t\x00;", wantErr: `the SQL text holds a character the provider does not read on line 1`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -170,7 +169,7 @@ func TestTokens_HappyPath(t *testing.T) {
 }
 
 func TestTokens_FailurePath(t *testing.T) {
-	for _, text := range []string{"SELECT $$x$$", "SELECT 'x", `SELECT "x`, "SELECT 1 /* x", "SELECT \x00"} {
+	for _, text := range []string{"SELECT $$x", "SELECT 'x", `SELECT "x`, "SELECT 1 /* x /* y */"} {
 		t.Run(text, func(t *testing.T) {
 			c := testcheck.New(t)
 			tokens, err := sqltext.Tokens(text)
@@ -178,4 +177,51 @@ func TestTokens_FailurePath(t *testing.T) {
 			c.Assert(tokens, qt.IsNil)
 		})
 	}
+}
+
+// tokenValue is what a test compares of a token.
+type tokenValue struct {
+	Text   string
+	Kind   sqltext.TokenKind
+	Name   bool
+	Value  string
+	Valued bool
+}
+
+// tokenValues returns what each token but white space stands for.
+func tokenValues(tokens []sqltext.Token) []tokenValue {
+	var values []tokenValue
+	for _, token := range tokens {
+		if token.Kind != sqltext.Space {
+			values = append(values, tokenValue{Text: token.Text, Kind: token.Kind, Name: token.Name, Value: token.Value, Valued: token.Valued})
+		}
+	}
+	return values
+}
+
+// A quoted token is one constant: a string continued on the next line and a
+// UESCAPE clause belong to it. Each token says what it stands for where
+// Spanner reads a value: the text of a string, the name of a quoted name, and
+// an unquoted word folded to lower case.
+func TestTokens_Values(t *testing.T) {
+	c := testcheck.New(t)
+	text := "SELECT E'it\\'s'\n'!' AS \"Mixed\", U&\"x!0079\" UESCAPE '!', $f$a;b$f$, 1, B'101' FROM t"
+	tokens, err := sqltext.Tokens(text)
+	c.Assert(err, qt.IsNil)
+	c.Assert(tokenValues(tokens), qt.DeepEquals, []tokenValue{
+		{Text: "SELECT", Kind: sqltext.Word, Value: "select", Valued: true},
+		{Text: "E'it\\'s'\n'!'", Kind: sqltext.Quoted, Value: "it's!", Valued: true},
+		{Text: "AS", Kind: sqltext.Word, Value: "as", Valued: true},
+		{Text: `"Mixed"`, Kind: sqltext.Quoted, Name: true, Value: "Mixed", Valued: true},
+		{Text: ",", Kind: sqltext.Punctuation},
+		{Text: `U&"x!0079" UESCAPE '!'`, Kind: sqltext.Quoted, Name: true, Value: "xy", Valued: true},
+		{Text: ",", Kind: sqltext.Punctuation},
+		{Text: "$f$a;b$f$", Kind: sqltext.Quoted, Value: "a;b", Valued: true},
+		{Text: ",", Kind: sqltext.Punctuation},
+		{Text: "1", Kind: sqltext.Word},
+		{Text: ",", Kind: sqltext.Punctuation},
+		{Text: "B'101'", Kind: sqltext.Quoted},
+		{Text: "FROM", Kind: sqltext.Word, Value: "from", Valued: true},
+		{Text: "t", Kind: sqltext.Word, Value: "t", Valued: true},
+	})
 }

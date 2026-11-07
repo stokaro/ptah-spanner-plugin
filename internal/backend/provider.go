@@ -106,6 +106,9 @@ func providerFeatures() []string {
 		provider.RenderOmissionsFeature,
 		provider.ExecuteFeature,
 		provider.AnalyzeSQLFeature,
+		// The query dialect states the lexical rules the host reads Spanner's
+		// text with; see queryDialect.
+		provider.QueryLexicalFeature,
 		// A failed call carries a reason the provider wrote.
 		provider.ErrorReasonsFeature,
 		// A read reports each column whole, the primary key in key order and

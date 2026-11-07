@@ -56,6 +56,14 @@ func TestSplit_HappyPath(t *testing.T) {
 			want: []unit{{SQL: "UPDATE t /* every row */ SET a = 'x;y'", Source: "UPDATE t /* every row */ SET a = 'x;y'\n;", Data: true}},
 		},
 		{
+			name: "a semicolon inside a dollar-quoted string, a continued escape string and a nested comment",
+			body: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b */ c; d */;\nUPDATE t SET a = E'it\\'s;'\n'z';",
+			want: []unit{
+				{SQL: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b */ c; d */", Source: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b */ c; d */;", Data: true},
+				{SQL: "UPDATE t SET a = E'it\\'s;'\n'z'", Source: "UPDATE t SET a = E'it\\'s;'\n'z';", Data: true},
+			},
+		},
+		{
 			name: "a last statement without a semicolon runs to the end",
 			body: "DELETE FROM t;\nDROP TABLE t\n",
 			want: []unit{
@@ -119,7 +127,7 @@ func TestSplit_FailurePath(t *testing.T) {
 		{name: "savepoint", body: "SAVEPOINT s;", start: 0, end: 12, reason: migrationunits.TransactionControlReason},
 		{name: "set", body: "SET statement_timeout = '1s';", start: 0, end: 29, reason: migrationunits.SettingReason},
 		{name: "reset", body: "-- note\nRESET ALL;", start: 8, end: 18, reason: migrationunits.SettingReason},
-		{name: "dollar quote", body: "SELECT $$x$$;", start: 0, end: 13, reason: migrationunits.LexingReason},
+		{name: "unclosed dollar quote", body: "SELECT $$x;", start: 0, end: 11, reason: migrationunits.LexingReason},
 		{name: "unclosed string", body: "SELECT 'x;", start: 0, end: 10, reason: migrationunits.LexingReason},
 	}
 	for _, test := range tests {
@@ -152,7 +160,7 @@ func TestReadOnly_FailurePath(t *testing.T) {
 		{name: "no statement", assertion: "-- empty", reason: "the text is not exactly one statement"},
 		{name: "a change", assertion: "DELETE FROM t", reason: "the statement is not a query that only reads rows"},
 		{name: "a change in a query", assertion: "WITH d AS (DELETE FROM t RETURNING id) SELECT * FROM d", reason: "the statement changes rows"},
-		{name: "unreadable", assertion: "SELECT $$x$$", reason: migrationunits.LexingReason},
+		{name: "unreadable", assertion: "SELECT $$x", reason: migrationunits.LexingReason},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -58,8 +58,8 @@ func TestStatements_FailurePath(t *testing.T) {
 			reason: `statement 1 controls a transaction; .*`},
 		{name: "a setting", text: "-- c\nSET spanner.autocommit_dml_mode = 'PARTITIONED_NON_ATOMIC';", offset: 5,
 			reason: `statement 1 is not a row write or a query; a seed file runs INSERT, UPDATE, DELETE and queries`},
-		{name: "a dollar-quoted string", text: "INSERT INTO t (a) VALUES ($$x$$);", offset: 26,
-			reason: `the provider cannot split the file into statements: a dollar-quoted string is not part of the provider's SQL`},
+		{name: "an unclosed dollar-quoted string", text: "INSERT INTO t (a) VALUES ($$x);", offset: 26,
+			reason: `the provider cannot split the file into statements: a dollar-quoted string \$\$ does not close on line 1`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

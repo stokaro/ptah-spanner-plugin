@@ -28,8 +28,8 @@ func TestSpans_FailurePath(t *testing.T) {
 		offset     int
 		wantErr    string
 	}{
-		{name: "an open string", text: "SELECT 'a", offset: 7, wantErr: `a string is not closed`},
-		{name: "an open comment", text: "SELECT 1; /* x", offset: 10, wantErr: `a comment is not closed`},
+		{name: "an open string", text: "SELECT 'a", offset: 7, wantErr: `a string does not close on line 1`},
+		{name: "an open comment", text: "SELECT 1;\n/* x /* y */", offset: 10, wantErr: `a block comment does not close on line 2`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

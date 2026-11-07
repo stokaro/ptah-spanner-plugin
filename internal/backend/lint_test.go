@@ -62,9 +62,9 @@ func TestSplitLintStatements_FailurePath(t *testing.T) {
 	t.Run("an unreadable text", func(t *testing.T) {
 		c := testcheck.New(t)
 		result, err := backend.New().SplitLintStatements(context.Background(), &protocol.SplitLintRequest{Engine: "spanner",
-			Sources: []*protocol.LintSource{{Name: "a.sql", Sql: "SELECT $$x$$"}}})
+			Sources: []*protocol.LintSource{{Name: "a.sql", Sql: "SELECT $$x"}}})
 		c.Assert(status.Code(err), qt.Equals, codes.InvalidArgument)
-		c.Assert(status.Convert(err).Message(), qt.Equals, "a dollar-quoted string is not part of the provider's SQL")
+		c.Assert(status.Convert(err).Message(), qt.Equals, "a dollar-quoted string $$ does not close on line 1")
 		c.Assert(result, qt.IsNil)
 	})
 	t.Run("a canceled call", func(t *testing.T) {

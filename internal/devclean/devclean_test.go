@@ -197,7 +197,7 @@ func TestObjects_FailurePath(t *testing.T) {
 	})
 	t.Run("DDL the provider cannot read", func(t *testing.T) {
 		c := testcheck.New(t)
-		snapshot := devclean.Catalog{Schemas: []string{"public"}, DDL: []string{"CREATE VIEW v AS SELECT $$x$$;"}}
+		snapshot := devclean.Catalog{Schemas: []string{"public"}, DDL: []string{"CREATE VIEW v AS SELECT $$x;"}}
 		objects, err := devclean.Objects(snapshot, nil)
 		c.Assert(err, qt.ErrorMatches, `the provider cannot read the database's DDL: .*`)
 		c.Assert(objects, qt.IsNil)

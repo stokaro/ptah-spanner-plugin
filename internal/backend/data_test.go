@@ -52,7 +52,8 @@ type dialectGolden struct {
 
 // The engine declares the query-builder spelling of the host's built-in
 // Spanner descriptor, so the host's query builder writes the same statements
-// for the provider's engine once the built-in engine is gone.
+// for the provider's engine once the built-in engine is gone, and the lexical
+// rules measured on the emulator, which the built-in descriptor did not state.
 func TestDescription_DeclaresTheBuiltInQueryDialect(t *testing.T) {
 	c := testcheck.New(t)
 	data, err := os.ReadFile("testdata/query-dialect.golden.json")
@@ -66,6 +67,7 @@ func TestDescription_DeclaresTheBuiltInQueryDialect(t *testing.T) {
 			OffsetFetch: golden.Query.OffsetFetch, FetchOrderBy: golden.Query.FetchOrderBy, OffsetOnlyLimit: golden.Query.OffsetOnlyLimit,
 			UnsignedBounds: golden.Query.UnsignedBounds, Upsert: golden.Query.Upsert, UpsertRefusal: golden.Query.UpsertRefusal, UpdateRefusal: golden.Query.UpdateRefusal},
 		DefaultCapabilities: golden.DefaultCapabilities,
+		Lexical:             &protocol.QueryLexical{EscapeStrings: true, ContinuedStrings: true, UnicodeStrings: true, NestedComments: true},
 	}
 	declared := backend.Description().GetEngines()[0].GetQueryDialect()
 	c.Assert(declared, qt.CmpEquals(protocmp.Transform()), want)
