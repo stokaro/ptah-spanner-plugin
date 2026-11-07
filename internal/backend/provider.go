@@ -21,6 +21,7 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/migrationlint"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableplan"
@@ -113,14 +114,20 @@ func providerFeatures() []string {
 		provider.NormalizeValuesFeature,
 		// The host takes a lock before it applies a plan; see locks.go.
 		provider.LocksFeature,
+		// Migration lint splits a migration as Spanner reads it and checks
+		// the SP rules; see lint.go.
+		provider.LintFeature,
 	}
 }
 
 // engineFeatures is the feature list of the spanner engine: every feature of
-// the provider. The description, the session and the inspection snapshot all
+// the provider, and the statement facts of its lint split, which an engine
+// alone lists. The description, the session and the inspection snapshot all
 // report it, so the host holds one target profile for observed, desired and
 // planned values.
-func engineFeatures() []string { return providerFeatures() }
+func engineFeatures() []string {
+	return append(providerFeatures(), provider.LintStatementFactsFeature)
+}
 
 // minimumContract is the oldest contract a host must speak to start the
 // provider: the one the SDK it is built with speaks, which is the contract its
@@ -143,6 +150,7 @@ func Description() *protocol.Description {
 			Identifiers:   identifierRules(),
 			ReleaseLines:  releaseLines(),
 			Features:      engineFeatures(),
+			LintRules:     migrationlint.Rules(),
 			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, rowdeletion.Models()...),
 			Planning: []*protocol.ModelPlanning{{
 				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), OperationKinds: []string{tableop.Kind},
