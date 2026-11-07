@@ -71,6 +71,14 @@ type session struct {
 	// lost is set once a lock the session held is gone. It never clears: the
 	// session runs nothing more.
 	lost bool
+	// transactions are the session's transaction handles by ID, and active
+	// the ID of the one whose transaction is open, if any; see
+	// transactions.go. mu guards them.
+	transactions map[string]*transaction
+	active       string
+	// readers are the metadata snapshot readers by ID; see metadata.go. mu
+	// guards them.
+	readers map[string]*reader
 }
 
 // New returns a provider with no open session.
@@ -115,6 +123,17 @@ func providerFeatures() []string {
 		provider.NormalizeValuesFeature,
 		// The host takes a lock before it applies a plan; see locks.go.
 		provider.LocksFeature,
+		// Migrations keep their revision records, log and tags in the
+		// tables Ptah's built-in Spanner engine kept them in, and read and
+		// change the records in Spanner's read-write transactions, which
+		// change data only; see history.go, metadata.go and
+		// transactions.go.
+		provider.TransactionsFeature,
+		provider.HistoryFeature,
+		provider.MetadataFeature,
+		// A migration body runs statement by statement, each where Spanner
+		// runs it; see migrationunits.
+		provider.MigrationSplitFeature,
 		// Declared rows are typed, read and written by the provider, and seed
 		// files run through it with their ledger; see rows.go and seeds.go.
 		provider.TypeRowsFeature,
