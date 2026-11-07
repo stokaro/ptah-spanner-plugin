@@ -21,5 +21,6 @@ func Server() runtime.Server {
 		TableCreations:  spanner,
 		Columns:         spanner,
 		FeaturePlanner:  spanner,
+		Linter:          spanner,
 	}
 }
