@@ -36,6 +36,8 @@ func Server() runtime.Server {
 		RowWriter:       spanner,
 		Seeds:           spanner,
 		Linter:          spanner,
+		DevCleaner:      spanner,
+		ReplayGuard:     spanner,
 		Statements:      spanner,
 		CommonObjects:   spanner,
 	}
