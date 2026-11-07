@@ -2,6 +2,7 @@ package tableplan
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -466,6 +467,14 @@ func number(value string) (string, bool) {
 	return text, true
 }
 
+// normalizeExpression reads an expression default in the spelling Spanner
+// stores it in, ignoring case and spacing. Spanner casts a string argument it
+// stores: `nextval('s1')` reads back as `nextval('s1'::text)`, so a ::text
+// cast after a string is dropped. Without it a default that draws from a
+// sequence is set again on every plan.
 func normalizeExpression(expression string) string {
-	return strings.Join(strings.Fields(strings.ToLower(expression)), " ")
+	return textCast.ReplaceAllString(strings.Join(strings.Fields(strings.ToLower(expression)), " "), "$1")
 }
+
+// textCast is a string literal followed by a cast to text.
+var textCast = regexp.MustCompile(`('(?:[^']|'')*')::text\b`)

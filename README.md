@@ -28,9 +28,19 @@ is evidence about the PostgreSQL interface, not about the managed service.
   their `STORING` columns, and the row deletion policy with the interval in
   the spelling Spanner stored. The index Spanner builds for a foreign key is
   Spanner's, not the user's, and is left out.
+- **Views and sequences.** A read reports each view with its query as Spanner
+  stores it, and each sequence with its counter start. A view is created with
+  `CREATE VIEW`, replaced with `CREATE OR REPLACE VIEW` and dropped with `DROP
+  VIEW`; a declared query converges whatever its case, spacing and quoting,
+  but a condition Spanner rewrites (`WHERE id > 0` reads back as `WHERE (id >
+  '0'::bigint)`) is replaced on every plan until it is declared in the stored
+  spelling. A sequence takes `START COUNTER WITH` alone: a changed start is
+  `ALTER SEQUENCE ... RESTART COUNTER WITH`, and any other option is refused.
+  A default `nextval('s')` converges with the `nextval('s'::text)` Spanner
+  stores. A sequence that skips a range is refused by the read.
 - **Refusals instead of omissions.** A read fails, with a reason that names the
   object, when the schema holds something the provider does not describe yet:
-  a view, a foreign key or CHECK constraint, a generated or identity column (Spanner adds a hidden `rowid` identity column to a table
+  a foreign key or CHECK constraint, a generated or identity column (Spanner adds a hidden `rowid` identity column to a table
   created without a primary key), a filtered, search or interleaved index, or an
   interleaved table. Ptah plans to create what a read leaves out, so leaving
   such an object out would plan a change the database refuses.
@@ -90,7 +100,7 @@ is evidence about the PostgreSQL interface, not about the managed service.
 
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table
-that holds one is refused), views and sequences, and versioned migrations. The plan and the measurements behind it are kept with
+that holds one is refused), and versioned migrations. The plan and the measurements behind it are kept with
 #4204. Creating a table with a foreign key or a table `CHECK`, and writing a
 read as SQL with `ptah db read`, need a Ptah release with
 [Ptah #5559](https://github.com/stokaro/ptah/pull/5559).

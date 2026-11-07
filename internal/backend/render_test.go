@@ -73,7 +73,7 @@ func TestRender_FailurePath(t *testing.T) {
 		wantErr string
 	}{
 		{name: "a common table change", change: &protocol.Change{Id: "x", Operation: &protocol.Change_DropTable{DropTable: &protocol.Empty{}}},
-			wantErr: `.*the provider renders the table operations it plans and nothing else.*`},
+			wantErr: `.*the provider renders the table operations it plans, views and sequences, and nothing else.*`},
 		{name: "an operation changed after planning", change: changed, wantErr: `.*a Spanner table operation changed after it was planned.*`},
 		{name: "an ALTER TABLE of another table", change: foreignParent, wantErr: `.*a table operation names its own table as its parent.*`},
 		{name: "a statement with a parent", change: standaloneParent, wantErr: `.*a standalone table operation has no parent.*`},

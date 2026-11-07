@@ -27,5 +27,6 @@ func Server() runtime.Server {
 		ModelComparer:   spanner,
 		ChangeReverser:  spanner,
 		ValueReporter:   spanner,
+		CommonObjects:   spanner,
 	}
 }

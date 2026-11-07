@@ -23,6 +23,7 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-spanner-plugin/internal/policysource"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tablefacets"
@@ -130,6 +131,10 @@ func providerFeatures() []string {
 		provider.CompareModelsFeature,
 		provider.ReverseChangesFeature,
 		provider.ReportCountsFeature,
+		// Views and sequences travel on the common-object wire: the host
+		// compares and orders them, the provider reads, spells and renders
+		// them; see commonobject.
+		provider.CommonObjectsFeature,
 	}
 }
 
@@ -170,6 +175,7 @@ func Description() *protocol.Description {
 			YamlSourceKeys:     policysource.YAMLKeys(),
 			GoSourceDirectives: policysource.GoDirectives(),
 			HclSource:          &protocol.HCLSourceDeclaration{Blocks: []*protocol.HCLSourceBlock{policysource.HCLPlatformBlock()}},
+			CommonObjects:      commonobject.Support(),
 		}},
 	}
 }

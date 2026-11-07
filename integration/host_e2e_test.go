@@ -48,8 +48,8 @@ func TestHostAppliesAndConvergesE2E(t *testing.T) {
 func TestHostShowsTheReadRefusalE2E(t *testing.T) {
 	c := testcheck.New(t)
 	address := freshDatabase(c)
-	execSQL(c, address, `CREATE TABLE t (id bigint PRIMARY KEY)`, `CREATE VIEW v SQL SECURITY INVOKER AS SELECT id FROM t`)
+	execSQL(c, address, `CREATE TABLE p (id bigint PRIMARY KEY)`, `CREATE TABLE ch (id bigint, k bigint, PRIMARY KEY (id, k)) INTERLEAVE IN PARENT p`)
 	output, err := hostCommand(c, "db", "read", "--db-url", withSearchPath(c, address))
 	c.Assert(err, qt.IsNotNil)
-	c.Assert(output, qt.Contains, `view "public"."v" is not described by the provider yet`)
+	c.Assert(output, qt.Contains, `table "public"."ch" is interleaved in a parent table, which the provider does not describe yet`)
 }

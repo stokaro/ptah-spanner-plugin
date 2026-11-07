@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 )
 
@@ -40,6 +41,16 @@ const (
 	// DropRowDeletion removes a table's row deletion policy: ALTER TABLE ...
 	// DROP TTL.
 	DropRowDeletion
+	// CreateView creates a view or replaces its query.
+	CreateView
+	// DropView drops a view.
+	DropView
+	// CreateSequence creates a sequence.
+	CreateSequence
+	// AlterSequence restarts a sequence's counter.
+	AlterSequence
+	// DropSequence drops a sequence.
+	DropSequence
 )
 
 // Statement is one statement of a text.
@@ -56,8 +67,8 @@ type Statement struct {
 }
 
 // ErrUnknownStatement reports a statement the provider does not know.
-var ErrUnknownStatement = errors.New("the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX and " +
-	"ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL only")
+var ErrUnknownStatement = errors.New("the provider analyzes CREATE and DROP of a TABLE, an INDEX, a VIEW or a SEQUENCE, " +
+	"CREATE OR REPLACE VIEW, ALTER SEQUENCE and ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL only")
 
 // Split splits a text into statements. Every byte of the text belongs to a
 // statement or is white space between statements: a comment before a
@@ -249,23 +260,38 @@ func classify(text string, start, end int, source []string) (Statement, error) {
 	return Statement{Start: start, End: end, Line: 1 + strings.Count(text[:start], "\n"), SourceWords: source, Words: words, Kind: kind}, nil
 }
 
-// kindOf reads the statement's leading words. The table name is one name or
-// a schema and a name joined by a dot.
+// leadingWords are the statements a kind is told by its leading words. The
+// table name of an ALTER TABLE is one name or a schema and a name joined by a
+// dot, and alterKind reads what follows it.
+var leadingWords = []struct {
+	words []string
+	kind  Kind
+}{
+	{words: []string{"CREATE", "TABLE"}, kind: CreateTable},
+	{words: []string{"DROP", "TABLE"}, kind: DropTable},
+	{words: []string{"CREATE", "INDEX"}, kind: CreateIndex},
+	{words: []string{"CREATE", "UNIQUE", "INDEX"}, kind: CreateIndex},
+	{words: []string{"DROP", "INDEX"}, kind: DropIndex},
+	{words: []string{"CREATE", "VIEW"}, kind: CreateView},
+	{words: []string{"CREATE", "OR", "REPLACE", "VIEW"}, kind: CreateView},
+	{words: []string{"DROP", "VIEW"}, kind: DropView},
+	{words: []string{"CREATE", "SEQUENCE"}, kind: CreateSequence},
+	{words: []string{"ALTER", "SEQUENCE"}, kind: AlterSequence},
+	{words: []string{"DROP", "SEQUENCE"}, kind: DropSequence},
+}
+
+// kindOf reads the statement's leading words.
 func kindOf(words []string) (Kind, error) {
 	if len(words) < 3 {
 		return 0, ErrUnknownStatement
 	}
-	switch {
-	case words[0] == "CREATE" && words[1] == "TABLE":
-		return CreateTable, nil
-	case words[0] == "DROP" && words[1] == "TABLE":
-		return DropTable, nil
-	case words[0] == "CREATE" && (words[1] == "INDEX" || words[1] == "UNIQUE" && words[2] == "INDEX"):
-		return CreateIndex, nil
-	case words[0] == "DROP" && words[1] == "INDEX":
-		return DropIndex, nil
-	case words[0] == "ALTER" && words[1] == "TABLE":
+	if words[0] == "ALTER" && words[1] == "TABLE" {
 		return alterKind(words[3:])
+	}
+	for _, leading := range leadingWords {
+		if len(words) > len(leading.words) && slices.Equal(words[:len(leading.words)], leading.words) {
+			return leading.kind, nil
+		}
 	}
 	return 0, ErrUnknownStatement
 }

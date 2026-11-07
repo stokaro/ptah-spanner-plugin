@@ -6,6 +6,7 @@ import (
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"google.golang.org/grpc/status"
 
+	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableplan"
 )
 
@@ -18,6 +19,10 @@ func (*Provider) ValidateSchema(ctx context.Context, request *protocol.ValidateS
 	result := &protocol.SchemaValidation{Complete: true}
 	for _, problem := range tableplan.Validate(request) {
 		result.Diagnostics = append(result.Diagnostics, &protocol.SchemaDiagnostic{Code: problem.Code, Kind: problem.Kind, Object: problem.Object, Message: problem.Message})
+	}
+	for _, refusal := range commonobject.Refusals(request.GetCommonObjects()) {
+		result.Diagnostics = append(result.Diagnostics, &protocol.SchemaDiagnostic{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: refusal.Kind,
+			Object: refusal.Object, Message: refusal.Reason})
 	}
 	return result, nil
 }

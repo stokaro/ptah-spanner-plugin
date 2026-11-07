@@ -149,17 +149,9 @@ ORDER BY table_name`, schema)
 }
 
 // refuseUndescribed fails the read when a schema holds an object the
-// provider does not describe yet: a view, or a foreign key or CHECK constraint
-// beyond the NOT NULL checks Spanner keeps for itself.
+// provider does not describe yet: a foreign key or CHECK constraint beyond the
+// NOT NULL checks Spanner keeps for itself.
 func refuseUndescribed(ctx context.Context, q Queryer, schema string) error {
-	view, err := firstName(ctx, q, `SELECT table_schema, table_name FROM information_schema.tables
-WHERE table_type = 'VIEW' AND table_schema = $1 ORDER BY table_name LIMIT 1`, schema)
-	if err != nil {
-		return err
-	}
-	if view != "" {
-		return &Unsupported{Reason: fmt.Sprintf("view %s is not described by the provider yet", view)}
-	}
 	rows, err := q.Query(ctx, `SELECT c.table_schema, c.table_name, c.constraint_name, c.constraint_type, k.check_clause
 FROM information_schema.table_constraints c
 LEFT JOIN information_schema.check_constraints k
@@ -406,24 +398,6 @@ func indexKey(column string, ordering *string) (IndexKey, error) {
 	default:
 		return IndexKey{}, fmt.Errorf("key %q has an ordering the provider cannot read", column)
 	}
-}
-
-// firstName runs a query whose rows hold two text columns and returns the
-// first row qualified as schema.name, or the empty string when there is none.
-func firstName(ctx context.Context, q Queryer, query string, args ...any) (string, error) {
-	rows, err := q.Query(ctx, query, args...)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		return "", rows.Err()
-	}
-	var schema, name string
-	if err := rows.Scan(&schema, &name); err != nil {
-		return "", err
-	}
-	return qualified(schema, name), rows.Err()
 }
 
 func qualified(schema, name string) string {
