@@ -50,7 +50,7 @@ func TestSplitRequest_FailurePath(t *testing.T) {
 	result, err := migrationlint.SplitRequest(context.Background(), &protocol.SplitLintRequest{Engine: "spanner", Sources: []*protocol.LintSource{
 		{Name: "1_a.up.sql", Sql: "SELECT 'x"},
 	}}, migrationlint.StatementFacts)
-	c.Assert(err, qt.ErrorMatches, `a string is not closed`)
+	c.Assert(err, qt.ErrorMatches, `a string does not close on line 1`)
 	c.Assert(result, qt.IsNil)
 }
 
@@ -65,10 +65,12 @@ func TestAnnotateRequest_HappyPath(t *testing.T) {
 		Sources: []*protocol.LintSource{
 			{Name: "a.sql", Sql: "CREATE TABLE nopk (a bigint); DROP TABLE nopk"},
 			{Name: "b.sql", Sql: "SELECT $$a;b$$"},
+			{Name: "c.sql", Sql: "SELECT $$a"},
 		},
 		Files: []*protocol.LintFile{
 			{Name: "a.sql", Statements: []*protocol.LintStatement{{Start: 0, End: 28}, {Start: 30, End: 40}}},
 			{Name: "b.sql", Statements: []*protocol.LintStatement{{Start: 0, End: 14}}},
+			{Name: "c.sql", Statements: []*protocol.LintStatement{{Start: 0, End: 10}}},
 		},
 	}
 	result, err := migrationlint.AnnotateRequest(context.Background(), request)
@@ -78,6 +80,7 @@ func TestAnnotateRequest_HappyPath(t *testing.T) {
 			{Effects: []*protocol.LintEffect{{Fact: kindFact, StatementClass: createTable, Kind: "CREATE TABLE", Object: "nopk"}}},
 			{Declined: true},
 		}},
+		{Statements: []*protocol.LintAnnotation{{Effects: []*protocol.LintEffect{{Fact: kindFact, StatementClass: other, Kind: "SELECT"}}}}},
 		{Statements: []*protocol.LintAnnotation{{Declined: true}}},
 	}})
 }

@@ -165,3 +165,22 @@ CREATE SEQUENCE s BIT_REVERSED_POSITIVE;
 	c.Assert(err, qt.ErrorMatches, `exit status 1`)
 	c.Assert(findings, qt.DeepEquals, []string{"wide.sql:1 DDL001", "wide.sql:3 SQL002", "wide.sql:4 CAP001", "wide.sql:1 SQL004"})
 }
+
+// The host lints a SQL file that holds what Spanner reads as PostgreSQL does:
+// a dollar-quoted string, a nested block comment and an escape string, each
+// holding a semicolon and an apostrophe. The provider's lint split reads each
+// as one token, so every statement keeps its own line. A provider whose lexer
+// refused dollar quotes failed the run at exit 2: split s69.sql through the
+// owner of spanner: a dollar-quoted string is not part of the provider's SQL.
+func TestHostLintsTextSpannerReadsAsPostgreSQLDoesE2E(t *testing.T) {
+	c := testcheck.New(t)
+	file := filepath.Join(writeFiles(c, map[string]string{"s69.sql": `CREATE TABLE withpk (id bigint NOT NULL, note text, PRIMARY KEY (id));
+INSERT INTO withpk (id, note) VALUES (1, $$it's; fine$$);
+/* a /* nested; it's */ comment */
+INSERT INTO withpk (id, note) VALUES (2, E'it\'s; fine');
+CREATE TABLE nopk (a bigint);
+`}), "s69.sql")
+	findings, err := lintReport(c, "sql", "lint", "--dialect", "spanner", file)
+	c.Assert(err, qt.ErrorMatches, `exit status 1`)
+	c.Assert(findings, qt.DeepEquals, []string{"s69.sql:2 SQL002", "s69.sql:4 SQL002", "s69.sql:5 DDL001"})
+}

@@ -21,7 +21,8 @@ type Span struct {
 	Body string
 }
 
-// LexError is a text the lexer cannot read, with the offset where it stopped.
+// LexError is a text the lexer cannot read, with the offset of the construct
+// that does not close.
 type LexError struct {
 	Offset int
 	Reason string
@@ -36,9 +37,12 @@ const leadingWords = 3
 // for any statement, not only the ones the provider plans: a seed file runs
 // INSERT and UPDATE statements Split refuses. An empty statement, a lone
 // semicolon, is skipped, and comments belong to no statement. A text the
-// lexer cannot read, such as one holding a dollar-quoted string, fails with
-// the offset of the token it stopped at.
+// lexer cannot read fails with a [*LexError].
 func Spans(text string) ([]Span, error) {
+	tokens, err := Tokens(text)
+	if err != nil {
+		return nil, err
+	}
 	var spans []Span
 	current := Span{Start: -1}
 	last := -1
@@ -50,36 +54,22 @@ func Spans(text string) ([]Span, error) {
 		}
 		current, last = Span{Start: -1}, -1
 	}
-	for position := 0; position < len(text); {
-		if isSpace(text[position]) {
-			position++
-			continue
-		}
-		end, err := tokenEnd(text, position)
-		if err != nil {
-			return nil, &LexError{Offset: position, Reason: err.Error()}
-		}
-		token := text[position:end]
-		switch {
-		case strings.HasPrefix(token, "--") || strings.HasPrefix(token, "/*"):
-		case token == ";":
-			finish(end)
+	for _, token := range tokens {
+		switch token.Kind {
+		case Space, Comment:
+		case Semicolon:
+			finish(token.End)
 		default:
 			if current.Start < 0 {
-				current.Start = position
-				current.Line = 1 + strings.Count(text[:position], "\n")
-				current.Column = 1 + utf8.RuneCountInString(text[strings.LastIndexByte(text[:position], '\n')+1:position])
+				current.Start = token.Start
+				current.Line = 1 + strings.Count(text[:token.Start], "\n")
+				current.Column = 1 + utf8.RuneCountInString(text[strings.LastIndexByte(text[:token.Start], '\n')+1:token.Start])
 			}
 			if len(current.Words) < leadingWords {
-				word := token
-				if isWordStart(token[0]) {
-					word = strings.ToUpper(token)
-				}
-				current.Words = append(current.Words, word)
+				current.Words = append(current.Words, upper(token))
 			}
-			last = end
+			last = token.End
 		}
-		position = end
 	}
 	finish(len(text))
 	return spans, nil

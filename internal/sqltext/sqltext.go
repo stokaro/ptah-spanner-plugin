@@ -1,16 +1,16 @@
 // Package sqltext splits a text of Spanner's PostgreSQL dialect into
 // statements and tokens, and says what each statement does to the schema.
 //
-// The lexing follows PostgreSQL's: double-quoted identifiers with doubled
-// quotes, single-quoted strings with doubled quotes, `--` and `/* */`
-// comments, and a semicolon that ends a statement outside a quote or a
-// comment. A dollar-quoted string is refused rather than guessed at.
+// The lexing is PostgreSQL's, as Spanner's PostgreSQL interface reads text,
+// and comes from github.com/stokaro/ptah/sqlsyntax/pgsyntax, the module the
+// host reads the PostgreSQL family with: quoted names, string constants in
+// every form, dollar-quoted strings, nested block comments, and a semicolon
+// that ends a statement outside all of them.
 package sqltext
 
 import (
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"strings"
 )
@@ -82,12 +82,13 @@ var ErrUnknownStatement = errors.New("the provider analyzes CREATE and DROP of a
 // statement starts it, and a comment after the last one ends it. A statement
 // the provider does not know fails the whole text.
 func Split(text string) ([]Statement, error) {
-	if uint64(len(text)) > math.MaxUint32 {
-		return nil, fmt.Errorf("a SQL text is larger than the protocol can address")
+	tokens, err := Tokens(text)
+	if err != nil {
+		return nil, err
 	}
 	var statements []Statement
 	start := -1
-	var source []string
+	var source []Token
 	finish := func(end int) error {
 		statement, err := classify(text, start, end, source)
 		if err != nil {
@@ -97,29 +98,21 @@ func Split(text string) ([]Statement, error) {
 		start, source = -1, nil
 		return nil
 	}
-	for position := 0; position < len(text); {
-		character := text[position]
-		if isSpace(character) {
-			position++
+	for _, token := range tokens {
+		if token.Kind == Space {
 			continue
 		}
 		if start < 0 {
-			start = position
+			start = token.Start
 		}
-		end, err := tokenEnd(text, position)
-		if err != nil {
-			return nil, err
-		}
-		token := text[position:end]
-		position = end
-		switch {
-		case strings.HasPrefix(token, "--") || strings.HasPrefix(token, "/*"):
+		switch token.Kind {
+		case Comment:
 			continue
-		case token == ";":
+		case Semicolon:
 			if len(source) == 0 {
-				return nil, fmt.Errorf("an empty statement ends on line %d", 1+strings.Count(text[:end], "\n"))
+				return nil, fmt.Errorf("an empty statement ends on line %d", 1+strings.Count(text[:token.End], "\n"))
 			}
-			if err := finish(end); err != nil {
+			if err := finish(token.End); err != nil {
 				return nil, err
 			}
 		default:
@@ -167,104 +160,19 @@ func alterKind(rest []string) (Kind, error) {
 	return 0, ErrUnknownStatement
 }
 
-// operators are the characters an operator token is made of.
-const operators = "+-*/<>=!~%^&|?:#@"
-
-// tokenEnd returns where the token that starts at position ends.
-func tokenEnd(text string, position int) (int, error) {
-	character := text[position]
-	switch {
-	case strings.HasPrefix(text[position:], "--") || strings.HasPrefix(text[position:], "/*"):
-		return commentEnd(text, position)
-	case character == '"' || character == '\'':
-		return quotedEnd(text, position, character)
-	case character == '$':
-		return 0, fmt.Errorf("a dollar-quoted string is not part of the provider's SQL")
-	case strings.IndexByte("(),;[].", character) >= 0:
-		return position + 1, nil
-	case isWordStart(character):
-		return runEnd(text, position, isWordPart), nil
-	case character >= '0' && character <= '9':
-		return runEnd(text, position, isNumberPart), nil
-	case strings.IndexByte(operators, character) >= 0:
-		return operatorEnd(text, position), nil
-	default:
-		return 0, fmt.Errorf("the SQL text holds a character the provider does not read on line %d", 1+strings.Count(text[:position], "\n"))
-	}
-}
-
-// commentEnd returns the end of the comment at position: a line comment ends
-// before its newline, a block comment after its closing mark.
-func commentEnd(text string, position int) (int, error) {
-	if strings.HasPrefix(text[position:], "--") {
-		if newline := strings.IndexByte(text[position:], '\n'); newline >= 0 {
-			return position + newline, nil
-		}
-		return len(text), nil
-	}
-	end := strings.Index(text[position+2:], "*/")
-	if end < 0 {
-		return 0, fmt.Errorf("a comment is not closed")
-	}
-	return position + 2 + end + 2, nil
-}
-
-// runEnd returns the end of the run of characters part accepts that starts
-// at position.
-func runEnd(text string, position int, part func(byte) bool) int {
-	end := position + 1
-	for end < len(text) && part(text[end]) {
-		end++
-	}
-	return end
-}
-
-// operatorEnd returns the end of an operator, which stops before a comment.
-func operatorEnd(text string, position int) int {
-	end := position + 1
-	for end < len(text) && strings.IndexByte(operators, text[end]) >= 0 && !strings.HasPrefix(text[end:], "--") && !strings.HasPrefix(text[end:], "/*") {
-		end++
-	}
-	return end
-}
-
-func isNumberPart(character byte) bool {
-	return character >= '0' && character <= '9' || character == '.' || character == 'e' || character == 'E'
-}
-
-// quotedEnd returns the end of a quoted identifier or string, where a doubled
-// quote stands for one.
-func quotedEnd(text string, position int, quote byte) (int, error) {
-	for end := position + 1; end < len(text); end++ {
-		if text[end] != quote {
-			continue
-		}
-		if end+1 < len(text) && text[end+1] == quote {
-			end++
-			continue
-		}
-		return end + 1, nil
-	}
-	if quote == '"' {
-		return 0, fmt.Errorf("a quoted name is not closed")
-	}
-	return 0, fmt.Errorf("a string is not closed")
-}
-
-// classify describes the statement spanning text[start:end].
-func classify(text string, start, end int, source []string) (Statement, error) {
+// classify describes the statement spanning text[start:end], whose tokens
+// are source with white space and comments left out.
+func classify(text string, start, end int, source []Token) (Statement, error) {
+	written := make([]string, len(source))
 	words := make([]string, len(source))
-	for i, word := range source {
-		words[i] = word
-		if isWordStart(word[0]) {
-			words[i] = strings.ToUpper(word)
-		}
+	for i, token := range source {
+		written[i], words[i] = token.Text, upper(token)
 	}
 	kind, err := kindOf(words)
 	if err != nil {
 		return Statement{}, err
 	}
-	return Statement{Start: start, End: end, Line: 1 + strings.Count(text[:start], "\n"), SourceWords: source, Words: words, Kind: kind}, nil
+	return Statement{Start: start, End: end, Line: 1 + strings.Count(text[:start], "\n"), SourceWords: written, Words: words, Kind: kind}, nil
 }
 
 // statementWords are the statements a kind is told by its leading words. The
@@ -309,13 +217,3 @@ func kindOf(words []string) (Kind, error) {
 // dataKinds are the statements that change or read rows, by their first
 // word.
 var dataKinds = map[string]Kind{"INSERT": Insert, "UPDATE": Update, "DELETE": Delete, "SELECT": Select}
-
-func isSpace(character byte) bool { return strings.IndexByte(" \t\r\n\f\v", character) >= 0 }
-
-func isWordStart(character byte) bool {
-	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character == '_'
-}
-
-func isWordPart(character byte) bool {
-	return isWordStart(character) || character >= '0' && character <= '9' || character == '$'
-}

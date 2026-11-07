@@ -42,8 +42,8 @@ const (
 	SettingReason = "the statement changes a session setting, which would not reach the statements after it; " +
 		"remove it"
 	// LexingReason refuses a body the provider cannot read into statements.
-	LexingReason = "the provider cannot read the body into statements: it holds a dollar-quoted string, " +
-		"an unclosed quote or comment, or a character outside Spanner's SQL"
+	LexingReason = "the provider cannot read the body into statements: a string, a quoted name, " +
+		"a dollar-quoted string or a block comment in it does not close"
 )
 
 // controlWords start a statement that controls a transaction or a batch:

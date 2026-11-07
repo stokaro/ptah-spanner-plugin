@@ -27,6 +27,12 @@ func TestWords_HappyPath(t *testing.T) {
 			wantUpp:    []string{"CREATE", "VIEW", `"V"`, "AS", "SELECT", "'a;b'", "FROM", "T"},
 		},
 		{
+			name:       "a dollar-quoted string, a continued escape string and a nested comment are read as PostgreSQL reads them",
+			text:       "SELECT $$x;y$$, E'a\\'b;'\n'c' /* d /* e; */ f */ FROM t",
+			wantSource: []string{"SELECT", "$$x;y$$", ",", "E'a\\'b;'\n'c'", "FROM", "t"},
+			wantUpp:    []string{"SELECT", "$$x;y$$", ",", "E'a\\'b;'\n'c'", "FROM", "T"},
+		},
+		{
 			name: "a semicolon alone has no words",
 			text: " ; ",
 		},
@@ -50,25 +56,27 @@ func TestWords_FailurePath(t *testing.T) {
 		c.Assert(source, qt.IsNil)
 		c.Assert(words, qt.IsNil)
 	})
-	t.Run("a dollar-quoted body", func(t *testing.T) {
+	t.Run("an unclosed dollar-quoted body", func(t *testing.T) {
 		c := testcheck.New(t)
-		source, words, err := sqltext.Words("SELECT $$x$$")
-		c.Assert(err, qt.ErrorMatches, `a dollar-quoted string is not part of the provider's SQL`)
+		source, words, err := sqltext.Words("SELECT $$x")
+		c.Assert(err, qt.ErrorMatches, `a dollar-quoted string \$\$ does not close on line 1`)
 		c.Assert(source, qt.IsNil)
 		c.Assert(words, qt.IsNil)
 	})
 }
 
 func TestUnquote(t *testing.T) {
-	tests := []struct{ name, token, want string }{
-		{name: "an unquoted word folds to lower case", token: "Parent", want: "parent"},
-		{name: "a quoted name keeps its case", token: `"Parent"`, want: "Parent"},
-		{name: "a doubled quote stands for one", token: `"a""b"`, want: `a"b`},
+	tests := []struct{ name, written, want string }{
+		{name: "an unquoted word folds to lower case", written: "Parent", want: "parent"},
+		{name: "a quoted name keeps its case", written: `"Parent"`, want: "Parent"},
+		{name: "a doubled quote stands for one", written: `"a""b"`, want: `a"b`},
+		{name: "a Unicode escape name", written: `U&"a\0062"`, want: "ab"},
+		{name: "a Unicode escape name with a UESCAPE clause", written: `U&"X!0079" UESCAPE '!'`, want: "Xy"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			c := testcheck.New(t)
-			c.Assert(sqltext.Unquote(test.token), qt.Equals, test.want)
+			c.Assert(sqltext.Unquote(test.written), qt.Equals, test.want)
 		})
 	}
 }

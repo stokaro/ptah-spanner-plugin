@@ -56,7 +56,7 @@ func TestReplay_Refused(t *testing.T) {
 		{"COMMIT", "COMMIT session or transaction state"},
 		{"CALL p()", "CALL statement"},
 		{"CREATE", "CREATE statement"},
-		{"SELECT $$x$$", "a statement the provider cannot read"},
+		{"SELECT $$x", "a statement the provider cannot read"},
 		{"CREATE TABLE a (id bigint); DROP TABLE b", "a statement the provider cannot read"},
 		{"-- only a comment", "an empty statement"},
 	}

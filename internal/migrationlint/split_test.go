@@ -73,10 +73,9 @@ func TestSplit_FailurePath(t *testing.T) {
 	tests := []struct {
 		name, text, wantErr string
 	}{
-		{name: "an unclosed string", text: "INSERT INTO t VALUES ('x", wantErr: `a string is not closed`},
-		{name: "an unclosed quoted name", text: `DROP TABLE "t`, wantErr: `a quoted name is not closed`},
-		{name: "a dollar-quoted string", text: "SELECT $$x$$", wantErr: `a dollar-quoted string is not part of the provider's SQL`},
-		{name: "a character the lexer does not read", text: "SELECT 1 \\", wantErr: `the SQL text holds a character the provider does not read on line 1`},
+		{name: "an unclosed string", text: "INSERT INTO t VALUES ('x", wantErr: `a string does not close on line 1`},
+		{name: "an unclosed quoted name", text: `DROP TABLE "t`, wantErr: `a quoted identifier does not close on line 1`},
+		{name: "an unclosed dollar-quoted string", text: "SELECT 1;\nSELECT $$x", wantErr: `a dollar-quoted string \$\$ does not close on line 2`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
