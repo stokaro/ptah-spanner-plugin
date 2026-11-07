@@ -146,6 +146,11 @@ func providerFeatures() []string {
 		// Migration lint splits a migration as Spanner reads it and checks
 		// the SP rules; see lint.go.
 		provider.LintFeature,
+		// The host empties a dev database through the provider and asks it
+		// whether a replayed statement stays inside one; see devclean.go and
+		// replay.go.
+		provider.DevCleanupFeature,
+		provider.ReplayGuardFeature,
 		// The statements an operator writes, such as a migration's check
 		// assertions, run through the provider; see statements.go.
 		provider.StatementsFeature,
