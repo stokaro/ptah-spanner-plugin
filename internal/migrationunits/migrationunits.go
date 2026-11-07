@@ -96,23 +96,23 @@ func Split(body string) ([]*protocol.MigrationUnit, *protocol.SplitRefusal) {
 	return units, nil
 }
 
-// ReadOnly reports whether a check assertion is one statement that reads rows
-// and changes nothing, and why not when it is not.
-func ReadOnly(assertion string) (bool, string) {
-	statements, ok := read(assertion)
+// ReadOnly reports whether a text, such as a check assertion, is one
+// statement that reads rows and changes nothing, and why not when it is not.
+func ReadOnly(text string) (bool, string) {
+	statements, ok := read(text)
 	switch {
 	case !ok:
 		return false, LexingReason
 	case len(statements) != 1:
-		return false, "the assertion is not exactly one statement"
+		return false, "the text is not exactly one statement"
 	}
 	head := statements[0].head()
 	if head != "SELECT" && head != "WITH" && head != "VALUES" {
-		return false, "the assertion is not a query that only reads rows"
+		return false, "the statement is not a query that only reads rows"
 	}
 	for _, word := range statements[0].words {
 		if slices.Contains([]string{"INSERT", "UPDATE", "DELETE"}, word) {
-			return false, "the assertion changes rows"
+			return false, "the statement changes rows"
 		}
 	}
 	return true, ""

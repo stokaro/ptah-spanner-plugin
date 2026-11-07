@@ -79,6 +79,9 @@ type session struct {
 	// readers are the metadata snapshot readers by ID; see metadata.go. mu
 	// guards them.
 	readers map[string]*reader
+	// results are the operator statements' results kept open past their
+	// first page, by page token; see statements.go. mu guards them.
+	results map[string]*openResult
 }
 
 // New returns a provider with no open session.
@@ -148,6 +151,9 @@ func providerFeatures() []string {
 		// replay.go.
 		provider.DevCleanupFeature,
 		provider.ReplayGuardFeature,
+		// The statements an operator writes, such as a migration's check
+		// assertions, run through the provider; see statements.go.
+		provider.StatementsFeature,
 	}
 }
 

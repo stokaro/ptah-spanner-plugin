@@ -99,13 +99,23 @@ is evidence about the PostgreSQL interface, not about the managed service.
   numbers compared by value, text in bytea hex is the bytes it spells, and a
   moment is rounded to the microsecond Spanner reads back. A moment written
   without an offset is UTC, and every moment the provider writes carries its
-  offset, because Spanner reads one without in America/Los_Angeles.
+  offset, because Spanner reads one without in America/Los_Angeles. A read
+  that names a transaction reads in it and sees what it wrote.
 - **Seeds.** `ptah seed` runs each file and its entry in the ledger
   `schema_seeds`, the table and layout Ptah's built-in Spanner engine kept, in
   one read-write transaction. A file that hits an existing key keeps nothing,
   and `--idempotent` records it instead. A file holding a schema statement, a
   transaction statement or a setting is refused before anything of it runs,
-  naming the line.
+  naming the line. A session with an open transaction runs no seed, because a
+  seed's transaction cannot join it.
+- **Operator statements.** A statement an operator writes, such as a
+  migration's `-- +ptah check` assertion, runs through the provider and
+  returns its columns and rows in the forms the declared rows use; a type no
+  common value holds, such as an array, arrives as its text. A read-only
+  statement runs only when it is one query that changes no row, and then in a
+  read-only transaction. Any other statement runs as written, in the
+  transaction it names or on its own. A statement Spanner refuses returns the
+  server's message and SQLSTATE.
 - **Migration lint.** `ptah migrations lint --dialect spanner` and `ptah sql
   lint --dialect spanner` read a file through the provider's split, which takes
   every statement a migration holds, and Ptah's rules for every engine run over
@@ -144,9 +154,8 @@ is evidence about the PostgreSQL interface, not about the managed service.
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table
 that holds one is refused, and `migrations generate` refuses a schema with a
-foreign key, whose down file must drop it first), the row deletion policy, views and sequences, and
-the statements an operator writes, which the `-- +ptah check` assertions of a
-migration run as (a migration that holds one is refused before it runs). The plan and the measurements behind it are kept with
+foreign key, whose down file must drop it first), the row deletion policy,
+and views and sequences. The plan and the measurements behind it are kept with
 #4204. Creating a table with a foreign key or a table `CHECK`, and writing a
 read as SQL with `ptah db read`, need a Ptah release with
 [Ptah #5559](https://github.com/stokaro/ptah/pull/5559).

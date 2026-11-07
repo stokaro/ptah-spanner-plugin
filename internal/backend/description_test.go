@@ -72,6 +72,15 @@ func TestDescription_MigrationsKeepTheirRecords(t *testing.T) {
 	}
 }
 
+// The statements an operator writes, such as a migration's check assertions,
+// run through the provider.
+func TestDescription_RunsOperatorStatements(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	c.Assert(description.GetEngines()[0].GetFeatures(), qt.Contains, provider.StatementsFeature)
+	c.Assert(description.GetFeatures(), qt.Contains, provider.StatementsFeature)
+}
+
 // The only line runs on the emulator in CI and stays best effort, because
 // the emulator is not the managed service.
 func TestDescription_TheLineIsBestEffortOnTheEmulator(t *testing.T) {
