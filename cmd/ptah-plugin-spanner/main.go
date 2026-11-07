@@ -1,18 +1,19 @@
-// Command ptah-plugin-spanner serves Spanner through the experimental Ptah
-// protocol. It implements no services yet: it negotiates, declares its engine,
-// and refuses every session.
+// Command ptah-plugin-spanner serves Cloud Spanner's PostgreSQL interface to
+// Ptah through the experimental provider protocol. Ptah starts it as a
+// subprocess; it is not a command-line tool.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/stokaro/ptah-spanner-plugin/internal/backend"
 	"github.com/stokaro/ptah/provider-sdk/runtime"
+
+	"github.com/stokaro/ptah-spanner-plugin/internal/backend"
 )
 
 func main() {
-	if err := runtime.Serve(runtime.Server{Description: backend.Description(), Sessions: backend.New()}); err != nil {
+	if err := runtime.Serve(backend.Server()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

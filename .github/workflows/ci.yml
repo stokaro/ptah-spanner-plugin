@@ -3,8 +3,27 @@ on:
   push:
     branches: [master]
   pull_request:
+  # The live master leg builds Ptah's master branch, so a nightly run shows a
+  # host change that breaks this provider even when the provider is unchanged.
+  schedule:
+    - cron: "37 3 * * *"
+  # A manual run can add a host ref leg: a branch, tag or commit of
+  # stokaro/ptah, such as a host pull request's branch. A pull request names
+  # one in .github/host-ref instead (see scripts/live-lines.sh).
+  workflow_dispatch:
+    inputs:
+      host_ref:
+        description: A branch, tag or commit of stokaro/ptah to run the live suite against, beside the release and master hosts
+        required: false
+        default: ''
 permissions:
   contents: read
+# A pull request's push supersedes its earlier run, so that run is canceled.
+# A push to master, the nightly run and a manual run each get a group of their
+# own, so none of them cancels another.
+concurrency:
+  group: provider-checks-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   unit:
     runs-on: ubuntu-latest
@@ -18,8 +37,78 @@ jobs:
       - run: go mod tidy -diff
       - run: sh scripts/check-module-boundaries.sh
       - run: go test -race ./...
-      - run: go vet ./...
+      - run: go vet -tags integration ./...
+      # The subprocess tests that need no server.
+      - run: go test -race -tags integration ./integration -run 'OfflineSubprocess' -count=1
       - run: CGO_ENABLED=0 go build -o bin/ptah-plugin-spanner ./cmd/ptah-plugin-spanner
+  # The host's lint contract: qtlint, nolintguard and golangci-lint over both
+  # build contours, and the declarative-test baseline. A file behind the
+  # integration tag is outside the default build, so only the second run of
+  # each linter reads the live tests. The golangci-lint version is the one
+  # Ptah's own lint job pins; the other tools are pinned in go.mod.
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: qtlint
+        run: make lint-qtlint
+      - name: nolintguard
+        run: make lint-nolintguard
+      - name: Test style baseline
+        run: make lint-teststyle
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout=30m
+          version: v2.15.0
+      - name: Lint (integration contour)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout=30m --build-tags=integration
+          version: v2.15.0
+  # .golangci.yml keeps the host's lint contract, which
+  # internal/cmd/lintcontract compares. The release leg reads the newest Ptah
+  # release this provider runs on and blocks. The master leg reads Ptah's
+  # master to show a change of the host's contract early; it does not block,
+  # because the provider follows a host change in a change of its own.
+  lint-contract:
+    name: lint contract (${{ matrix.host }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.host == 'master' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [release, master]
+    env:
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Resolve the host
+        id: host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST: ${{ matrix.host }}
+        run: scripts/resolve-host.sh "$HOST"
+      - name: Check out the host's lint configuration
+        if: steps.host.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: stokaro/ptah
+          ref: ${{ steps.host.outputs.ref }}
+          path: .host-contract
+          sparse-checkout: .golangci.yml
+          sparse-checkout-cone-mode: false
+      - name: Compare with the host's lint contract
+        if: steps.host.outputs.skip != 'true'
+        run: go run ./internal/cmd/lintcontract -host .host-contract/.golangci.yml
   windows-unit:
     runs-on: windows-latest
     env:
@@ -30,3 +119,83 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test ./...
+  # The lines the live job runs, each an image and a host, from
+  # scripts/live-lines.sh: the release and master legs on every run, and a
+  # host ref leg when a manual run or .github/host-ref names one.
+  lines:
+    runs-on: ubuntu-latest
+    outputs:
+      lines: ${{ steps.lines.outputs.lines }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: lines
+        env:
+          HOST_REF: ${{ inputs.host_ref }}
+        run: scripts/live-lines.sh "$HOST_REF"
+  # The provider is compatible with the provider contract, not with particular
+  # Ptah versions. The release leg builds the newest published Ptah whose
+  # contract this provider can run on and blocks the merge and the release. The
+  # master leg builds Ptah's master to show a host change that breaks this
+  # provider early; it does not block, because a red Ptah master is not this
+  # repository's defect. A host ref leg builds the host a run names, and blocks.
+  live:
+    name: live (${{ matrix.line.host }})
+    needs: lines
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.line.host == 'master' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        line: ${{ fromJSON(needs.lines.outputs.lines) }}
+    env:
+      GOWORK: 'off'
+      # Each test takes a database of its own on this endpoint; the emulator
+      # creates a database on the first connection to it.
+      PTAH_SPANNER_TEST_URL: spanner://127.0.0.1:5432/ptah_test?sslmode=disable
+    services:
+      spanner:
+        image: ${{ matrix.line.image }}
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # The service has no health check the image can run, so the job waits
+      # for PGAdapter's port before a test connects.
+      - name: Wait for the emulator
+        shell: bash
+        run: |
+          for _ in $(seq 60); do
+            if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "the Spanner emulator did not open port 5432" >&2
+          exit 1
+      - name: Resolve the host
+        id: host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST: ${{ matrix.line.host }}
+        run: scripts/resolve-host.sh "$HOST"
+      - name: Check out the host
+        if: steps.host.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: stokaro/ptah
+          ref: ${{ steps.host.outputs.ref }}
+          path: .host-contract
+      - name: Name the host commit
+        if: steps.host.outputs.skip != 'true'
+        run: git -C .host-contract log -1 --format='host %H %s'
+      - name: Build the host binary
+        if: steps.host.outputs.skip != 'true'
+        run: |
+          host_binary="$RUNNER_TEMP/ptah-contract"
+          CGO_ENABLED=0 go build -C .host-contract -o "$host_binary" ./cmd/ptah
+          printf 'PTAH_HOST_TEST_BIN=%s\n' "$host_binary" >> "$GITHUB_ENV"
+      - if: steps.host.outputs.skip != 'true'
+        run: go test -tags integration ./integration -race -count=1 -v -timeout 40m
