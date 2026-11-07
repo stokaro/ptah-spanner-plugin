@@ -218,7 +218,9 @@ string, fails the run with the reason.
 ## Seeds and check assertions
 
 `ptah seed` runs each seed file and its entry in the ledger
-`public.schema_seeds` in one read-write transaction. The ledger is the table and layout Ptah's built-in
+`public.schema_seeds` in one read-write transaction. A read reports the ledger
+as reserved on a Ptah of provider contract 25.29, so `ptah schema apply` never
+plans to drop it. The ledger is the table and layout Ptah's built-in
 Spanner engine kept, with `checksum` as `TEXT` and `applied_at` as
 `TIMESTAMPTZ`. A file that hits an existing key keeps nothing, and
 `--idempotent` records the file instead. A file that holds a schema statement,

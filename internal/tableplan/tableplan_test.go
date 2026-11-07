@@ -2,6 +2,7 @@ package tableplan_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -320,11 +321,9 @@ func TestPlan_FailurePath(t *testing.T) {
 	c.Assert(result, qt.IsNil)
 }
 
-// A created table in a schema of its own follows CREATE SCHEMA IF NOT
-// EXISTS, written once for every table of that schema; a table of the default
-// schema needs none.
-func TestPlan_CreatesTheSchemaOfATable(t *testing.T) {
-	c := testcheck.New(t)
+// schemaTablesRequest creates tables t and u in schema app and p in the
+// default schema.
+func schemaTablesRequest() *protocol.PlanFeaturesRequest {
 	inSchema := func(schema, name string) *protocol.ComparisonIdentity {
 		identity := subject(name)
 		identity.Schema = &protocol.ComparisonPart{Source: schema, Normalized: schema}
@@ -337,11 +336,20 @@ func TestPlan_CreatesTheSchemaOfATable(t *testing.T) {
 		return &protocol.CommonPlanningStep{Id: &protocol.StepIdentity{Owner: "ptah.run/provider-common", Name: name}, Parent: identity,
 			Metadata: &protocol.PlanningMetadata{Effects: []*protocol.PlanningEffect{effect(identity, protocol.PlanningEffect_CREATE)}}}
 	}
-	r := request([]*protocol.PlanningTable{
+	return request([]*protocol.PlanningTable{
 		{Subject: inSchema("app", "t"), Action: protocol.PlanningTable_CREATE, Desired: declared("t")},
 		{Subject: inSchema("app", "u"), Action: protocol.PlanningTable_CREATE, Desired: declared("u")},
 		{Subject: subject("p"), Action: protocol.PlanningTable_CREATE, Desired: declared("p")},
 	}, createStep("common/000000", inSchema("app", "t")), createStep("common/000001", inSchema("app", "u")), createStep("common/000002", subject("p")))
+}
+
+// For a host that does not carry schemas, a created table in a schema of its
+// own follows CREATE SCHEMA IF NOT EXISTS, written once for every table of
+// that schema; a table of the default schema needs none.
+func TestPlan_CreatesTheSchemaOfATable(t *testing.T) {
+	c := testcheck.New(t)
+	r := schemaTablesRequest()
+	r.TargetFeatures = slices.DeleteFunc(r.TargetFeatures, func(feature string) bool { return feature == provider.CommonNamespacesFeature })
 	steps, dependencies, _ := plan(c, r)
 	c.Assert(statements(steps), qt.DeepEquals, []string{
 		"CREATE TABLE \"app\".\"t\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
@@ -350,4 +358,46 @@ func TestPlan_CreatesTheSchemaOfATable(t *testing.T) {
 		"CREATE TABLE \"p\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
 	})
 	c.Assert(dependencies, qt.DeepEquals, [][2]string{{steps[1].Name, steps[0].Name}, {steps[1].Name, steps[2].Name}})
+}
+
+// A host that carries schemas (schema.common-namespaces) plans the creation
+// of a created table's schema itself, so the service plans the tables alone.
+func TestPlan_LeavesTheSchemaToAHostThatCarriesSchemas(t *testing.T) {
+	c := testcheck.New(t)
+	steps, dependencies, _ := plan(c, schemaTablesRequest())
+	c.Assert(statements(steps), qt.DeepEquals, []string{
+		"CREATE TABLE \"app\".\"t\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
+		"CREATE TABLE \"app\".\"u\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
+		"CREATE TABLE \"p\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
+	})
+	c.Assert(dependencies, qt.HasLen, 0)
+}
+
+// A declared WHERE clause becomes NOT NULL tests in byte order of the column
+// names, each quoted, for a host that compares index predicates.
+func TestPlan_CreatesAFilteredIndex(t *testing.T) {
+	c := testcheck.New(t)
+	desired := &protocol.DeclaredTable{Name: "t", Columns: []*protocol.DeclaredColumn{
+		{Name: "id", Type: "bigint", Primary: true}, {Name: "b", Type: "bigint", Nullable: true}, {Name: "Abc", Type: "bigint", Nullable: true},
+	}, Indexes: []*protocol.DeclaredIndex{{Name: "t_f", Fields: []string{"b", "Abc"}, Condition: `b IS NOT NULL AND "Abc" IS NOT NULL`}}}
+	r := request([]*protocol.PlanningTable{{Subject: subject("t"), Action: protocol.PlanningTable_CREATE, Desired: desired}},
+		common("common/000000", "t", effect(subject("t"), protocol.PlanningEffect_CREATE)))
+	steps, _, _ := plan(c, r)
+	c.Assert(statements(steps)[1:], qt.DeepEquals, []string{`CREATE INDEX "t_f" ON "t" ("b", "Abc") WHERE "Abc" IS NOT NULL AND "b" IS NOT NULL;`})
+}
+
+// A host that does not compare index predicates gets a declared WHERE clause
+// refused, because it would rebuild the index on every plan.
+func TestPlan_RefusesAFilteredIndexWithoutPredicates(t *testing.T) {
+	c := testcheck.New(t)
+	desired := &protocol.DeclaredTable{Name: "t", Columns: []*protocol.DeclaredColumn{{Name: "id", Type: "bigint", Primary: true}, {Name: "b", Type: "bigint", Nullable: true}},
+		Indexes: []*protocol.DeclaredIndex{{Name: "t_f", Fields: []string{"b"}, Condition: "b IS NOT NULL"}}}
+	r := request([]*protocol.PlanningTable{{Subject: subject("t"), Action: protocol.PlanningTable_CREATE, Desired: desired}},
+		common("common/000000", "t", effect(subject("t"), protocol.PlanningEffect_CREATE)))
+	r.TargetFeatures = slices.DeleteFunc(r.TargetFeatures, func(feature string) bool { return feature == provider.IndexPredicatesFeature })
+	result, err := tableplan.Plan(context.Background(), r)
+	c.Assert(err, qt.IsNil)
+	c.Assert(result.GetDiagnostics(), qt.HasLen, 1)
+	c.Assert(result.GetDiagnostics()[0].GetMessage(), qt.Equals,
+		`table "t": index "t_f" has a WHERE filter, which needs a host that compares index predicates (schema.index-predicates)`)
 }

@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
@@ -228,7 +229,7 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 	p.created[keyOf(table.GetSubject())] = step
 	p.creationOrder = append(p.creationOrder, step)
 	for _, declared := range desired.GetIndexes() {
-		created, err := indexOperation(declared)
+		created, err := indexOperation(declared, p.request.GetTargetFeatures())
 		if err != nil {
 			return &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: fmt.Sprintf("table %s: %v", phrase(table.GetSubject()), err)}
 		}
@@ -248,9 +249,13 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 // built-in Spanner engine wrote it, because the read a plan is made from may
 // cover only the schemas a URL selects and so cannot say whether the schema
 // is there.
+//
+// A host that carries schemas (schema.common-namespaces) plans the creation
+// itself, from a read that lists the schemas, and orders it before the
+// tables in the schema, so the service adds none.
 func (p *planner) createSchema(index int, subject *protocol.ComparisonIdentity, creation *protocol.StepIdentity) error {
 	schema := subject.GetSchema().GetSource()
-	if schema == "" || schema == ddl.DefaultSchema {
+	if schema == "" || schema == ddl.DefaultSchema || slices.Contains(p.request.GetTargetFeatures(), provider.CommonNamespacesFeature) {
 		return nil
 	}
 	step, found := p.schemas[schema]
@@ -462,7 +467,7 @@ func (p *planner) claimAlteration(index int, table *protocol.PlanningTable, comm
 			if declared == nil {
 				return nil, "", fmt.Errorf("table %s does not declare the index %q the host adds", phrase(subject), target.GetName().GetSource())
 			}
-			operation, err := indexOperation(declared)
+			operation, err := indexOperation(declared, p.request.GetTargetFeatures())
 			if err != nil {
 				return nil, "", &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: fmt.Sprintf("table %s: %v", phrase(subject), err)}
 			}

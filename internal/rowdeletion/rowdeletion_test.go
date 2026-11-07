@@ -108,13 +108,13 @@ func TestNormalize_FailurePath(t *testing.T) {
 	}
 }
 
-// A desired policy lists the Go and YAML sources, which state the policy of
-// every table they declare; HCL states it in a platform block only, which the
-// provider claims at that site.
+// A desired policy lists the Go, YAML and SQL sources, which state the policy
+// of every table they declare; HCL states it in a platform block only, which
+// the provider claims at that site.
 func TestModels_SourceFormats(t *testing.T) {
 	c := testcheck.New(t)
 	c.Assert(rowdeletion.DesiredModel().GetSourceFormats(), qt.DeepEquals,
-		[]protocol.SourceDocument_Format{protocol.SourceDocument_GO_ANNOTATIONS, protocol.SourceDocument_YAML})
+		[]protocol.SourceDocument_Format{protocol.SourceDocument_GO_ANNOTATIONS, protocol.SourceDocument_YAML, protocol.SourceDocument_SQL})
 	c.Assert(rowdeletion.ObservedModel().GetSourceFormats(), qt.HasLen, 0)
 	c.Assert(rowdeletion.ObservedModel().GetDisplayName(), qt.Equals, "row deletion policies")
 }

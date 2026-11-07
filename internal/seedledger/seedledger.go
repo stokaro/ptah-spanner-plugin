@@ -10,6 +10,8 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/stokaro/ptah-spanner-plugin/internal/ownedtable"
 )
 
 // Table is the ledger's name, in the default schema.
@@ -39,6 +41,16 @@ var Layout = []Column{
 	{Name: "env", Type: "character varying(128)"},
 	{Name: "checksum", Type: "character varying"},
 	{Name: "applied_at", Type: "timestamp with time zone"},
+}
+
+// Definition is the ledger as a table the provider keeps its records in: a
+// read reports a table that holds exactly this layout as the seed ledger.
+func Definition() ownedtable.Definition {
+	columns := make([]ownedtable.Column, len(Layout))
+	for i, column := range Layout {
+		columns[i] = ownedtable.Column{Name: column.Name, Type: column.Type}
+	}
+	return ownedtable.Definition{Schema: "public", Name: Table, Columns: columns, PrimaryKey: []string{"seed_path"}}
 }
 
 // Queryer runs a catalog query. *pgx.Conn implements it.

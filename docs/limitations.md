@@ -54,13 +54,14 @@ describe:
 | A generated column | `column "c" of table "public"."t" is generated, which the provider does not describe yet` |
 | An identity column other than the hidden key of a table without a primary key | `column "c" of table "public"."t" is an identity column, which the provider does not describe yet` |
 | A search index, a null-filtered index, or an index interleaved in a parent table | `index "i" of table "public"."t" is a SEARCH index, which the provider does not describe yet`, and the matching reason for the other two |
-| An index with a `WHERE` filter | `index "i" of table "public"."t" has a WHERE filter, which the provider does not describe yet` |
+| An index with a `WHERE` clause, on a Ptah that does not compare index predicates (provider contract 25.28 or older) | `index "i" of table "public"."t" has a WHERE filter, which needs a host that compares index predicates (schema.index-predicates)` |
+| An index whose filter the provider cannot read back as `NOT NULL` tests on the index's columns | `index "i" of table "public"."t" has a WHERE filter the provider cannot read: ...` |
 | A sequence that skips a range of values | `sequence "public"."s" skips a range of values, which the provider does not describe yet` |
 | An index Spanner is still building, or a foreign key or `CHECK` it is still validating | `... is still being built; read again once Spanner reports it ready`, or `still being validated` for a constraint |
 
-The filter Spanner keeps on every unique index, `<key> IS NOT NULL AND ...`,
-is not a user filter, and a read of a unique index without a filter of its own
-succeeds. The index Spanner builds for a foreign key, and the `CHECK` it keeps
+The `NOT NULL` tests Spanner keeps on every key column of a unique index are
+not a user filter: a read leaves them out, and a unique index without a filter
+of its own reads as one without a `WHERE` clause. The index Spanner builds for a foreign key, and the `CHECK` it keeps
 for a `NOT NULL` column, are Spanner's own and are left out of a read without a
 refusal.
 
@@ -76,7 +77,7 @@ holds one refused, each naming the object and the contract feature it needs.
 | `smallint`, `serial`, `timestamp`, `json`, `char`, `xml`, `interval`, a type modifier and the other types Spanner does not have | [Column types](declarations.md#column-types) |
 | A descending or prefixed key part, and a key with `INCLUDE`, a method or deferral | [Primary keys](declarations.md#primary-keys) |
 | A collation, an engine, a comment, custom table SQL, a trigger, an identity or generated column, and uniqueness over an expression | [What a table cannot carry](declarations.md#what-a-table-cannot-carry) |
-| An index with a `WHERE` filter, an access method, an operator class, storage parameters, `NULLS NOT DISTINCT`, an expression key or a prefix | [Indexes](declarations.md#indexes) |
+| An index with a `WHERE` clause Spanner cannot create, an access method, an operator class, storage parameters, `NULLS NOT DISTINCT`, an expression key or a prefix | [Indexes](declarations.md#indexes) |
 | `ON UPDATE`, an `ON DELETE` action other than `NO ACTION` or `CASCADE`, deferral, and a foreign key on `jsonb`, `numeric`, `real` or an array | [Foreign keys and CHECK constraints](declarations.md#foreign-keys-and-check-constraints) |
 | A row deletion policy with a unit, without whole days, or on a column that is not `timestamptz` | [Row deletion policies](declarations.md#row-deletion-policies) |
 | A materialized view, a view option, `with_check` and a view comment | [Views](declarations.md#views) |
@@ -104,14 +105,16 @@ other than its counter start is refused too.
 
 ## Clauses Ptah does not hand the provider
 
-Some declarations stop in Ptah before they reach the provider, because the
-provider contract this release speaks has no place for them:
+On a Ptah of provider contract 25.28 or older, some declarations stop in Ptah
+before they reach the provider, because that contract has no place for them. A
+Ptah of contract 25.29 hands each of them to the provider:
 
 - A SQL schema file's row deletion clause, `TTL INTERVAL '30 days' ON
   created_at`, is refused with
   `the experimental provider contract does not support Table.Overrides`.
-  Declare the policy in Go, YAML or HCL. An export that `ptah db read` writes
-  carries the clause, so the export does not replay through the provider.
+  Declare the policy in Go, YAML or HCL there. An export that `ptah db read`
+  writes carries the clause, so the export does not replay through the
+  provider on such a Ptah.
 - A schema declared as an object of its own, through SQL `CREATE SCHEMA`, a Go
   `//ptah:schema:schema` directive or an HCL `schema` block other than
   `public`, is refused with
@@ -120,6 +123,7 @@ provider contract this release speaks has no place for them:
   SQL without the schema object, is created after `CREATE SCHEMA IF NOT EXISTS`.
   An HCL table always names a `schema` block, so an HCL table outside `public`
   is refused.
+- An index with a `WHERE` clause is refused, in a declaration and in a read.
 
 ## Gaps without a refusal
 
@@ -133,9 +137,11 @@ them is part of stokaro/ptah#4204.
   cs1`), after the statements before it have run. A change stream created `FOR
   ALL` names nothing explicitly, and both drops succeed under it. An export
   carries no line that marks change streams as not described.
-- **The seed ledger.** After `ptah seed` has run, `ptah schema apply` plans
-  `DROP TABLE "schema_seeds"` when the declaration does not name the table.
-  Review the plan, or declare the table.
+- **The seed ledger on an older Ptah.** On a Ptah of provider contract 25.28
+  or older, after `ptah seed` has run, `ptah schema apply` plans `DROP TABLE
+  "schema_seeds"` when the declaration does not name the table. Review the
+  plan, or declare the table. A Ptah of contract 25.29 leaves the ledger out of
+  every plan.
 - **A column added with a `CHECK`.** The down file that `ptah migrations
   generate` writes for it drops the column first, and Spanner refuses that
   (`Cannot drop column score on which there is a dependent check constraint`).

@@ -4,7 +4,7 @@
 // the provider's table lifecycle service owns beside the table itself.
 //
 // The package holds the policy's models as the host carries them: a desired
-// facet a Go, YAML or HCL source declares, an observed facet a read reports,
+// facet a Go, YAML, HCL or SQL source declares, an observed facet a read reports,
 // and the change a comparison reports for a table both sides hold. It also
 // holds the policy's meaning: the interval is compared by the hours it
 // denotes, because the server stores its own spelling of it (see
@@ -87,12 +87,16 @@ func buildModel(representation protocol.ValueInput_Representation) *protocol.Val
 	model := &protocol.ValueModel{Representation: representation, SchemaVersion: schemaVersion, Encoding: encoding}
 	switch representation {
 	case protocol.ValueInput_DESIRED:
-		// A Go table directive and a YAML table entry state the policy of
-		// every table they declare, so a table without one declares none. An
-		// HCL table states it only in its platform "spanner" block, which the
-		// provider claims at that site alone (see policysource), so HCL is not
-		// listed: a table without the block leaves its policy unmanaged.
-		model.SourceFormats = []protocol.SourceDocument_Format{protocol.SourceDocument_GO_ANNOTATIONS, protocol.SourceDocument_YAML}
+		// A Go table directive, a YAML table entry and a SQL CREATE TABLE
+		// state the policy of every table they declare, so a table without
+		// one declares none. A SQL document states it in the TTL clause the
+		// provider claims (source.sql-table-clauses), and a host that does
+		// not negotiate the claim sends the provider no SQL. An HCL table
+		// states it only in its platform "spanner" block, which the provider
+		// claims at that site alone (see policysource), so HCL is not listed:
+		// a table without the block leaves its policy unmanaged.
+		model.SourceFormats = []protocol.SourceDocument_Format{protocol.SourceDocument_GO_ANNOTATIONS, protocol.SourceDocument_YAML,
+			protocol.SourceDocument_SQL}
 		model.DisplayName = displayName
 	case protocol.ValueInput_OBSERVED:
 		model.DisplayName = displayName

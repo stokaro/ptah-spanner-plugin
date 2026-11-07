@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
+	"github.com/stokaro/ptah-spanner-plugin/internal/indexfilter"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 )
 
@@ -104,6 +105,10 @@ type Index struct {
 	// Storing are the columns the index stores beside its keys, in the order
 	// the catalog lists them.
 	Storing []string
+	// Filter are the columns the index's WHERE clause requires to be NOT
+	// NULL, in byte order, leaving out the key columns of a unique index,
+	// whose test Spanner adds by itself; see indexfilter.
+	Filter []string
 }
 
 // IndexKey is one key part of an index.
@@ -480,8 +485,12 @@ ORDER BY index_name`, table.Schema, table.Name)
 		if err := readIndexColumns(ctx, q, table, &index); err != nil {
 			return nil, err
 		}
-		if h.filter != nil && *h.filter != "" && (!index.Unique || *h.filter != uniqueFilter(index.Keys)) {
-			return nil, &Unsupported{Reason: where + " has a WHERE filter, which the provider does not describe yet"}
+		if h.filter != nil && *h.filter != "" {
+			filter, err := readFilter(index, *h.filter)
+			if err != nil {
+				return nil, &Unsupported{Reason: fmt.Sprintf("%s has a WHERE filter the provider cannot read: %v", where, err)}
+			}
+			index.Filter = filter
 		}
 		indexes = append(indexes, index)
 	}
@@ -523,24 +532,30 @@ ORDER BY ordinal_position NULLS LAST, column_name`, table.Schema, table.Name, in
 	return nil
 }
 
-// uniqueFilter is the filter Spanner gives a unique index of its own accord:
-// every key column IS NOT NULL, joined by AND, in byte order of the column
-// names and unquoted. It keeps PostgreSQL's rule that rows with a NULL key do
-// not collide. Measured on the emulator behind PGAdapter 0.56.2: `CREATE
-// UNIQUE INDEX u ON p (zed, "Abc", mid)` reads back with the filter `Abc IS
-// NOT NULL AND mid IS NOT NULL AND zed IS NOT NULL`. A unique index whose
-// filter is exactly this one is a plain unique index.
-func uniqueFilter(keys []IndexKey) string {
-	columns := make([]string, len(keys))
-	for i, key := range keys {
-		columns[i] = key.Column
+// readFilter reads an index's filter into the columns its WHERE clause
+// requires to be NOT NULL. Spanner gives a unique index a NOT NULL test on
+// every key column of its own accord, which keeps PostgreSQL's rule that rows
+// with a NULL key do not collide. Measured on the emulator behind PGAdapter
+// 0.56.2: `CREATE UNIQUE INDEX u ON p (zed, "Abc", mid)` reads back with the
+// filter `Abc IS NOT NULL AND mid IS NOT NULL AND zed IS NOT NULL`, and
+// `CREATE UNIQUE INDEX u ON p (zed, mid) WHERE zed IS NOT NULL` with `mid IS
+// NOT NULL AND zed IS NOT NULL`. Those tests are left out of a unique
+// index's filter, so a plain unique index has none.
+func readFilter(index Index, filter string) ([]string, error) {
+	keys := make([]string, len(index.Keys))
+	for i, key := range index.Keys {
+		keys[i] = key.Column
 	}
-	slices.Sort(columns)
-	conditions := make([]string, len(columns))
-	for i, column := range columns {
-		conditions[i] = column + " IS NOT NULL"
+	filtered, err := indexfilter.Read(filter, append(slices.Clone(keys), index.Storing...))
+	if err != nil || !index.Unique {
+		return filtered, err
 	}
-	return strings.Join(conditions, " AND ")
+	for _, key := range keys {
+		if !slices.Contains(filtered, key) {
+			return nil, fmt.Errorf("the unique index has no NOT NULL test on its key %q", key)
+		}
+	}
+	return slices.DeleteFunc(filtered, func(column string) bool { return slices.Contains(keys, column) }), nil
 }
 
 // indexKey reads a key's column_ordering: ASC or DESC, followed by NULLS FIRST

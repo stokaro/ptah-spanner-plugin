@@ -270,9 +270,7 @@ func sprintfHCL(columns, platform string) string {
 
 // A policy Spanner refuses is refused before a statement is sent: a unit,
 // which Spanner's clause has no place for, an interval that is not a whole
-// number of days, and a column that is not timestamptz. A SQL document's TTL
-// clause is refused by the host, which carries no provider's table clause yet
-// (stokaro/ptah#4204 S42): the table is not created without its policy.
+// number of days, and a column that is not timestamptz.
 func TestHostRefusesRowDeletionPoliciesE2E(t *testing.T) {
 	c := testcheck.New(t)
 	address := withSearchPath(c, freshDatabase(c))
@@ -288,11 +286,74 @@ func TestHostRefusesRowDeletionPoliciesE2E(t *testing.T) {
 	output, err := policyApply(c, address, "schema.yaml", strings.Replace(table, "%s", "row_deletion_column: n, row_deletion_interval: 30 days", 1), dryRun)
 	c.Assert(err, qt.IsNotNil)
 	c.Assert(output, qt.Contains, `the row deletion policy of table "events" counts from column "n", which is not timestamptz`)
+}
 
-	output, err = applySQL(c, address, "CREATE TABLE events (id bigint PRIMARY KEY, ts timestamptz) TTL INTERVAL '30 days' ON ts;\n")
-	c.Assert(err, qt.IsNotNil)
-	c.Assert(output, qt.Contains, "Table.Overrides")
-	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'events'`), qt.HasLen, 0)
+// sqlPolicyTable is the events table of a SQL schema document, with the
+// clause after its column list.
+func sqlPolicyTable(clause string) string {
+	return "CREATE TABLE events (id bigint PRIMARY KEY, ts timestamptz)" + clause + ";\n"
+}
+
+// A SQL document declares a table's policy with Spanner's TTL clause, which
+// the provider claims (source.sql-table-clauses): the table is created with
+// it, as the built-in created it, the next plan converges on the interval the
+// server stores, a changed interval alters the policy, and a table without the
+// clause has none. `ptah db read` writes the clause, and its output replays
+// and converges. A provider without the claim had the clause refused by the
+// host (`does not support Table.Overrides`).
+func TestHostReadsTheTTLClauseOfASQLDocumentE2E(t *testing.T) {
+	c := testcheck.New(t)
+	skipBeforeContract2529(c)
+	address := freshDatabase(c)
+	output, err := applySQL(c, address, sqlPolicyTable(" TTL INTERVAL '30 days' ON ts"))
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, ") TTL INTERVAL '30 days' ON \"ts\";")
+	c.Assert(queryRows(c, address, `SELECT row_deletion_policy_expression FROM information_schema.tables WHERE table_name = 'events'`),
+		qt.DeepEquals, []string{"INTERVAL '4 WEEKS 2 DAYS' ON ts"})
+
+	for _, step := range []struct{ clause, want string }{
+		{clause: " TTL INTERVAL '30 days' ON ts", want: synced},
+		{clause: " TTL INTERVAL '60 days' ON ts", want: `ALTER TABLE "events" ALTER TTL INTERVAL '60 days' ON "ts";`},
+		{clause: "", want: `ALTER TABLE "events" DROP TTL;`},
+	} {
+		output, err := planSQL(c, address, sqlPolicyTable(step.clause))
+		c.Assert(err, qt.IsNil, qt.Commentf("%q: %s", step.clause, output))
+		c.Assert(output, qt.Contains, step.want, qt.Commentf("%q", step.clause))
+	}
+
+	exported, err := hostCommand(c, "db", "read", "--db-url", address)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", exported))
+	c.Assert(exported, qt.Contains, ") TTL INTERVAL '4 WEEKS 2 DAYS' ON \"ts\";")
+	statements := exported[strings.Index(exported, "CREATE TABLE"):]
+	replayed := freshDatabase(c)
+	output, err = applySQL(c, replayed, statements)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	output, err = planSQL(c, replayed, statements)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+}
+
+// A TTL clause Spanner would not take is refused while the document is read,
+// at the clause's place, and nothing is created: an interval that is not a
+// whole number of days, and a clause with more than one column after ON.
+func TestHostRefusesTTLClausesSpannerCannotTakeE2E(t *testing.T) {
+	tests := []struct{ name, clause, wantErr string }{
+		{name: "an interval of hours", clause: " TTL INTERVAL '36 hours' ON ts",
+			wantErr: `the row deletion policy of table "events": the interval is not a whole number of days, which Spanner refuses`},
+		{name: "two words after ON", clause: " TTL INTERVAL '30 days' ON ts id",
+			wantErr: `table "events": the row deletion policy names something other than one column after ON`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			skipBeforeContract2529(c)
+			address := freshDatabase(c)
+			output, err := applySQL(c, address, sqlPolicyTable(test.clause))
+			c.Assert(err, qt.IsNotNil)
+			c.Assert(output, qt.Contains, "table clause of events: provider decode source failed (InvalidArgument): "+test.wantErr)
+			c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'events'`), qt.HasLen, 0)
+		})
+	}
 }
 
 // rowsPolicy is a YAML declaration of events, a table with a key and the

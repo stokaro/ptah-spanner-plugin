@@ -106,7 +106,31 @@ func TestPrepareTables_StatesIndexNullsOrders(t *testing.T) {
 	c.Assert(indexes[1].GetNulls(), qt.DeepEquals, []string{"FIRST", "LAST", "", "", ""})
 }
 
-// A host that did not negotiate the NULLS order gets no prepared index.
+// A host that negotiated index predicates gets each declared index's WHERE
+// clause in the spelling Spanner keeps, `<column> IS NOT NULL` for each column
+// once, unquoted, in byte order and joined by AND, and an empty one for an
+// index without a clause. A host that did not negotiate the NULLS order too
+// gets no NULLS orders.
+func TestPrepareTables_StatesIndexPredicates(t *testing.T) {
+	c := testcheck.New(t)
+	request := &protocol.PrepareTablesRequest{Engine: "spanner", TargetFeatures: []string{provider.IndexPredicatesFeature},
+		Tables: []*protocol.TablePreparationInput{{Desired: &protocol.DeclaredTable{Name: "t",
+			Columns: []*protocol.DeclaredColumn{{Name: "zed"}, {Name: "Abc"}, {Name: "mid"}}, Indexes: []*protocol.DeclaredIndex{
+				{Name: "t_plain", Fields: []string{"zed"}},
+				{Name: "t_filtered", Fields: []string{"zed", "Abc", "mid"}, Condition: `mid IS NOT NULL AND "Abc" IS NOT NULL AND (ZED IS NOT NULL)`},
+			}}}}}
+	result, err := backend.New().PrepareTables(context.Background(), request)
+	c.Assert(err, qt.IsNil)
+	c.Assert(provider.ValidatePreparedTablesReply(backend.Description(), request, result), qt.IsNil)
+	indexes := result.GetTables()[0].GetIndexes()
+	c.Assert(indexes, qt.HasLen, 2)
+	c.Assert(indexes[0].GetCondition(), qt.Equals, "")
+	c.Assert(indexes[1].GetCondition(), qt.Equals, "Abc IS NOT NULL AND mid IS NOT NULL AND zed IS NOT NULL")
+	c.Assert(indexes[1].GetNulls(), qt.HasLen, 0)
+}
+
+// A host that negotiated neither the NULLS order nor index predicates gets no
+// prepared index.
 func TestPrepareTables_StatesNoIndexWithoutTheFeature(t *testing.T) {
 	c := testcheck.New(t)
 	request := &protocol.PrepareTablesRequest{Engine: "spanner", Tables: []*protocol.TablePreparationInput{{Desired: &protocol.DeclaredTable{Name: "t",
@@ -144,8 +168,40 @@ func TestValidateSchema(t *testing.T) {
 	c.Assert(messages, qt.DeepEquals, []string{
 		`column "n" of table "typed": type "int4": Spanner stores integers as bigint only`,
 		`column "id" of table "serial" is an identity column, which the provider does not describe yet`,
-		`index "f" of table "filtered" has a WHERE filter, which the provider does not create yet`,
+		`index "f" of table "filtered" has a WHERE filter, which needs a host that compares index predicates (schema.index-predicates)`,
 		`foreign key "fk_refs_g" of table "refs" has ON UPDATE CASCADE; Spanner has no ON UPDATE action`,
+	})
+}
+
+// For a host that compares index predicates, a WHERE clause of NOT NULL tests
+// on the index's own columns is accepted, and every other clause is refused
+// with the reason Spanner would give.
+func TestValidateSchema_IndexFilters(t *testing.T) {
+	c := testcheck.New(t)
+	indexed := func(indexes ...*protocol.DeclaredIndex) *protocol.ValidationTable {
+		return &protocol.ValidationTable{Subject: &protocol.ComparisonIdentity{Kind: "table", Schema: &protocol.ComparisonPart{Source: "public", Normalized: "public"},
+			Name: &protocol.ComparisonPart{Source: "t", Normalized: "t"}}, Declaration: &protocol.DeclaredTable{Name: "t", Columns: []*protocol.DeclaredColumn{
+			{Name: "id", Type: "bigint", Primary: true}, {Name: "a", Type: "bigint", Nullable: true}, {Name: "b", Type: "bigint", Nullable: true},
+			{Name: "s", Type: "varchar", Nullable: true}}, Indexes: indexes}}
+	}
+	request := &protocol.ValidateSchemaRequest{Engine: "spanner", TargetFeatures: []string{provider.IndexPredicatesFeature}, Tables: []*protocol.ValidationTable{indexed(
+		&protocol.DeclaredIndex{Name: "ok_keys", Fields: []string{"a", "b"}, Condition: "(b IS NOT NULL) AND a is not null"},
+		&protocol.DeclaredIndex{Name: "ok_stored", Fields: []string{"a"}, IncludeColumns: []string{"s"}, Condition: `"s" IS NOT NULL`},
+		&protocol.DeclaredIndex{Name: "ok_unique_stored", Unique: true, Fields: []string{"a"}, IncludeColumns: []string{"s"}, Condition: "s IS NOT NULL"},
+		&protocol.DeclaredIndex{Name: "range", Fields: []string{"a"}, Condition: "a > 0"},
+		&protocol.DeclaredIndex{Name: "outside", Fields: []string{"a"}, Condition: "b IS NOT NULL"},
+		&protocol.DeclaredIndex{Name: "unique_key", Unique: true, Fields: []string{"a"}, Condition: "a IS NOT NULL"},
+	)}}
+	result, err := backend.New().ValidateSchema(context.Background(), request)
+	c.Assert(err, qt.IsNil)
+	messages := make([]string, len(result.GetDiagnostics()))
+	for i, diagnostic := range result.GetDiagnostics() {
+		messages[i] = diagnostic.GetMessage()
+	}
+	c.Assert(messages, qt.DeepEquals, []string{
+		`index "range" of table "t" has a WHERE filter Spanner cannot create: Spanner takes only <column> IS NOT NULL tests joined by AND`,
+		`index "outside" of table "t" filters on column "b", which the index neither keys nor stores; Spanner filters an index on its own columns only`,
+		`index "unique_key" of table "t" is unique and filters on its key "a"; Spanner leaves the rows whose key holds NULL out of a unique index by itself, so remove the test`,
 	})
 }
 

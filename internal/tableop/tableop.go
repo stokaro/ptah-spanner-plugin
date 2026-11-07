@@ -128,6 +128,9 @@ type Index struct {
 	Unique  bool       `json:"unique"`
 	Keys    []IndexKey `json:"keys"`
 	Storing []string   `json:"storing,omitempty"`
+	// Filter are the columns the index's WHERE clause requires to be NOT
+	// NULL, in byte order; see indexfilter.
+	Filter []string `json:"filter,omitempty"`
 }
 
 // IndexKey is one key part of an index.
@@ -170,7 +173,8 @@ func buildModel() *protocol.ValueModel {
 			"type":       "alter-column-type: the type as declared; Spanner changes a type only between character varying and bytea",
 			"default":    "set-default: the SQL that follows DEFAULT",
 			"expression": "add-check: the condition",
-			"index":      "create-index: name, unique, ordered keys with direction and NULLS ordering, and the stored columns",
+			"index": "create-index: name, unique, ordered keys with direction and NULLS ordering, the stored columns, " +
+				"and the columns its WHERE clause requires to be NOT NULL",
 			"foreignKey": "add-foreign-key: name, columns, the referenced schema, table and columns, and ON DELETE CASCADE or none",
 			"rowDeletion": "create-table, add-row-deletion and alter-row-deletion: the row deletion policy's column and its interval as declared; " +
 				"drop-row-deletion takes none",
@@ -456,7 +460,7 @@ func (i Index) ddl() ddl.Index {
 	for n, key := range i.Keys {
 		keys[n] = ddl.IndexKey{Column: key.Column, Descending: key.Descending, Nulls: key.Nulls}
 	}
-	return ddl.Index{Name: i.Name, Unique: i.Unique, Keys: keys, Storing: i.Storing}
+	return ddl.Index{Name: i.Name, Unique: i.Unique, Keys: keys, Storing: i.Storing, Filter: i.Filter}
 }
 
 func (k ForeignKey) ddl() ddl.ForeignKey {

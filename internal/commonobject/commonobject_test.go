@@ -91,6 +91,10 @@ func TestRender_HappyPath(t *testing.T) {
 			want: `ALTER SEQUENCE "s" RESTART COUNTER WITH 5000;`},
 		{name: "a dropped sequence", change: &protocol.CommonObjectChange{Operation: &protocol.CommonObjectChange_DropSequence{
 			DropSequence: &protocol.Reference{Kind: "sequence", Schema: "app", Name: "s"}}}, want: `DROP SEQUENCE "app"."s";`},
+		{name: "a schema, as Ptah's built-in Spanner engine created one", change: &protocol.CommonObjectChange{Operation: &protocol.CommonObjectChange_CreateSchema{
+			CreateSchema: &protocol.NamespaceCreation{Name: "app"}}}, want: `CREATE SCHEMA IF NOT EXISTS "app";`},
+		{name: "a dropped schema, without CASCADE", change: &protocol.CommonObjectChange{Operation: &protocol.CommonObjectChange_DropSchema{
+			DropSchema: &protocol.Reference{Kind: "schema", Name: "app"}}}, want: `DROP SCHEMA "app";`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -114,7 +118,9 @@ func TestRender_FailurePath(t *testing.T) {
 			Sequence: &protocol.Reference{Kind: "sequence", Name: "s"}, Desired: &protocol.SQLSequence{Name: "s"}, Changed: []string{"increment"}}}},
 			wantErr: `changing the increment of sequence "s": a Spanner sequence takes START COUNTER WITH alone`},
 		{name: "a role", change: &protocol.CommonObjectChange{Operation: &protocol.CommonObjectChange_DropRole{DropRole: &protocol.Reference{Kind: "role", Name: "r"}}},
-			wantErr: `the provider writes views and sequences, and Spanner has no role`},
+			wantErr: `the provider writes schemas, views and sequences, and Spanner has no role`},
+		{name: "a schema with a comment", change: &protocol.CommonObjectChange{Operation: &protocol.CommonObjectChange_CreateSchema{
+			CreateSchema: &protocol.NamespaceCreation{Name: "app", Comment: "x"}}}, wantErr: `the comment on schema "app": Spanner's PostgreSQL interface stores no comment`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
