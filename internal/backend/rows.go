@@ -50,14 +50,14 @@ func (*Provider) RenderRowWrites(ctx context.Context, request *protocol.RenderRo
 // ReadRows reads one page of a table in key order. A table that does not
 // exist is a complete page that says so; a table that does not hold a
 // requested column, or holds one of a type the provider reads no value of, is
-// an error. The provider offers no transaction, so a read names none.
+// an error. A read that names a transaction reads in it and sees what the
+// transaction wrote; the catalog is read on the session's connection, which
+// is outside every transaction, because a table's columns change only outside
+// one.
 func (p *Provider) ReadRows(ctx context.Context, request *protocol.ReadRowsRequest) (*protocol.RowPage, error) {
 	table := request.GetTable()
 	if err := rowdata.ValidateTable(table); err != nil {
 		return nil, runtime.ErrorWithReason(codes.InvalidArgument, err.Error())
-	}
-	if request.GetTransactionId() != "" {
-		return nil, runtime.ErrorWithReason(codes.InvalidArgument, "the provider offers no transactions, so a row read names none")
 	}
 	current, err := p.lookup(request.GetSessionId())
 	if err != nil {
@@ -72,6 +72,14 @@ func (p *Provider) ReadRows(ctx context.Context, request *protocol.ReadRowsReque
 	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
+	var q rowQuerier = current.conn
+	var record *transaction
+	if id := request.GetTransactionId(); id != "" {
+		if record, err = current.openTransaction(id); err != nil {
+			return nil, err
+		}
+		q = record.tx
+	}
 	read, err := tableColumns(ctx, current.conn, schema, table.GetName())
 	if err != nil {
 		return nil, callFailed(ctx, "the provider could not read the table's columns from the Spanner catalog")
@@ -88,9 +96,14 @@ func (p *Provider) ReadRows(ctx context.Context, request *protocol.ReadRowsReque
 		return nil, runtime.ErrorWithReason(codes.FailedPrecondition, err.Error())
 	}
 	result := &protocol.RowPage{Table: proto.CloneOf(table), Exists: true, Columns: columns}
-	last, more, err := readPage(ctx, current.conn, text, query, request, result)
+	last, more, err := readPage(ctx, q, text, query, request, result)
 	if err != nil {
 		if driverFailed := (*driverError)(nil); errors.As(err, &driverFailed) {
+			if record != nil {
+				// A failed read aborts the transaction, which then commits
+				// nothing.
+				record.failed = true
+			}
 			return nil, callFailed(ctx, "the row read did not complete")
 		}
 		return nil, runtime.ErrorWithReason(codes.FailedPrecondition, err.Error())
@@ -200,7 +213,13 @@ func pageQuery(request *protocol.ReadRowsRequest, schema string, read *readTable
 // readPage reads the rows of one page into result. It stops at the request's
 // row bound and at the page's byte bound, and reports whether rows remain and
 // the ordering values of the last row it kept.
-func readPage(ctx context.Context, conn *pgx.Conn, text string, query rowdata.PageQuery, request *protocol.ReadRowsRequest,
+// rowQuerier runs a page's query on the session's connection or in a
+// transaction. *pgx.Conn and pgx.Tx implement it.
+type rowQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func readPage(ctx context.Context, conn rowQuerier, text string, query rowdata.PageQuery, request *protocol.ReadRowsRequest,
 	result *protocol.RowPage) (last []*protocol.DataValue, more bool, err error) {
 	rows, err := conn.Query(ctx, text)
 	if err != nil {

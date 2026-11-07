@@ -335,3 +335,34 @@ func TestHostMigrationsTakeTheLockE2E(t *testing.T) {
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(revisions(c, address), qt.HasLen, 2)
 }
+
+// A migration's `-- +ptah check` assertion runs through the provider as a
+// read-only query before the migration: a satisfied one lets it run, and one
+// that is not stops the run before the migration touches anything, in the
+// built-in engine's words. Without the provider's statements the host refused
+// every migration that holds one.
+func TestHostRunsCheckAssertionsE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	dir := writeFiles(c, map[string]string{
+		"1700000001_users.up.sql":   "CREATE TABLE users (id bigint NOT NULL, PRIMARY KEY (id));\n",
+		"1700000001_users.down.sql": "DROP TABLE users;\n",
+		"1700000002_notes.up.sql": "-- +ptah check name=\"users_empty\" assert=\"SELECT count(*) = 0 FROM users\" on_fail=abort\n" +
+			"CREATE TABLE notes (id bigint NOT NULL, PRIMARY KEY (id));\n",
+		"1700000002_notes.down.sql": "DROP TABLE notes;\n",
+	})
+	output, err := migrate(c, "up", "--db-url", address, "--migrations-dir", dir, "--limit", "1")
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	execSQL(c, address, "INSERT INTO users (id) VALUES (1)")
+	output, err = migrate(c, "up", "--db-url", address, "--migrations-dir", dir)
+	c.Assert(err, qt.ErrorMatches, "exit status 2", qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "pre-migration check users_empty for migration 1700000002 was not satisfied (assert: SELECT count(*) = 0 FROM users)")
+	c.Assert(queryRows(c, address, "SELECT version, state FROM schema_migrations ORDER BY version"), qt.DeepEquals, []string{"1700000001 applied"})
+	c.Assert(tables(c, address), qt.Not(qt.Contains), "notes")
+
+	execSQL(c, address, "DELETE FROM users WHERE true")
+	output, err = migrate(c, "up", "--db-url", address, "--migrations-dir", dir)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(queryRows(c, address, "SELECT version, state FROM schema_migrations ORDER BY version"), qt.DeepEquals,
+		[]string{"1700000001 applied", "1700000002 applied"})
+}
