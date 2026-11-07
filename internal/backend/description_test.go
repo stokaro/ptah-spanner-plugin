@@ -59,6 +59,28 @@ func TestDescription_TheProviderOwnsItsTables(t *testing.T) {
 	c.Assert(engine.GetPlanning()[0].GetOperationKinds(), qt.DeepEquals, []string{"github.com/stokaro/ptah-spanner-plugin/table-operation"})
 }
 
+// Migrations keep their records through the provider: revision history, the
+// log and tags, transactions for the records, and a split of each body into
+// the statements Spanner runs one by one.
+func TestDescription_MigrationsKeepTheirRecords(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	engine := description.GetEngines()[0]
+	for _, feature := range []string{provider.TransactionsFeature, provider.HistoryFeature, provider.MetadataFeature, provider.MigrationSplitFeature} {
+		c.Assert(engine.GetFeatures(), qt.Contains, feature)
+		c.Assert(description.GetFeatures(), qt.Contains, feature)
+	}
+}
+
+// The statements an operator writes, such as a migration's check assertions,
+// run through the provider.
+func TestDescription_RunsOperatorStatements(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	c.Assert(description.GetEngines()[0].GetFeatures(), qt.Contains, provider.StatementsFeature)
+	c.Assert(description.GetFeatures(), qt.Contains, provider.StatementsFeature)
+}
+
 // The only line runs on the emulator in CI and stays best effort, because
 // the emulator is not the managed service.
 func TestDescription_TheLineIsBestEffortOnTheEmulator(t *testing.T) {
@@ -81,6 +103,6 @@ func TestServer_Validates(t *testing.T) {
 func TestServer_RefusesAServiceTheServerLacks(t *testing.T) {
 	c := testcheck.New(t)
 	server := backend.Server()
-	server.Description.Features = append(server.Description.Features, provider.TransactionsFeature)
+	server.Description.Features = append(server.Description.Features, provider.EmbeddingStoreFeature)
 	c.Assert(server.Validate(), qt.ErrorIs, provider.ErrProtocol)
 }
