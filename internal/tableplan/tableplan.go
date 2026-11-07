@@ -38,13 +38,19 @@ const ServiceID = "spanner-tables"
 // assigns it the tables of the engine.
 func ParentKinds() []string { return []string{rowdeletion.Kind} }
 
+// ChangeKinds are the changes the service plans: a change of a kept table's
+// row deletion policy.
+func ChangeKinds() []string { return []string{rowdeletion.ChangeKind} }
+
 // The ranks order steps that nothing else orders: the host schedules ready
 // steps by owner and then by name, so a table's creation comes before an
-// index, and an index before a constraint, as Ptah's built-in Spanner engine
-// wrote them.
+// index, and an index before a constraint, and the column changes of every
+// table come before the row deletion policy changes, as Ptah's built-in
+// Spanner engine wrote them.
 const (
 	rankTable      = "1-table"
 	rankColumn     = "2-column"
+	rankPolicy     = "2-policy"
 	rankIndex      = "3-index"
 	rankConstraint = "4-constraint"
 )
@@ -190,6 +196,9 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 	if err != nil {
 		return &refusal{table: index, code: protocol.PlanningDiagnostic_INVALID_SCHEMA, message: err.Error()}
 	}
+	if operation.RowDeletion, err = creationPolicy(table.GetSubject(), desired); err != nil {
+		return &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: err.Error()}
+	}
 	step, err := p.replace(index, common, rankTable, operation, protocol.NativeOperation_STATEMENT)
 	if err != nil {
 		return err
@@ -277,8 +286,8 @@ func (p *planner) drop(index int, table *protocol.PlanningTable) error {
 
 // alter plans a table the plan keeps: it claims the host's steps that add
 // and drop its columns and indexes, and adds a step for each change of a
-// column's type, default and nullability. A change of the primary key is
-// refused.
+// column's type, default and nullability and of the table's row deletion
+// policy. A change of the primary key is refused.
 func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 	desired, current := table.GetDesired(), table.GetCurrent()
 	if desired == nil || current == nil {
@@ -290,7 +299,7 @@ func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 			"changing the primary key of table %s from (%s) to (%s): Spanner cannot change a table's primary key; create a new table with the key and copy the rows",
 			phrase(subject), strings.Join(held, ", "), strings.Join(declared, ", "))}
 	}
-	var removals, additions, alterations []*protocol.StepIdentity
+	var removals, additions, alterations, dropped []*protocol.StepIdentity
 	for _, common := range p.request.GetCommonSteps() {
 		if !proto.Equal(common.GetParent(), subject) || common.GetCommonObject() != nil {
 			continue
@@ -306,11 +315,27 @@ func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 			additions = append(additions, step)
 		case "column-addition":
 			alterations = append(alterations, step)
+		case "column-removal":
+			dropped = append(dropped, step)
 		}
 	}
 	changed, err := p.columnChanges(index, table)
 	if err != nil {
 		return err
+	}
+	policies, err := p.policyChanges(index, table)
+	if err != nil {
+		return err
+	}
+	// A policy changes after the columns it may count from are added and
+	// before the column it counted from is dropped.
+	for _, step := range policies {
+		for _, addition := range alterations {
+			p.depend(addition, step)
+		}
+		for _, removal := range dropped {
+			p.depend(step, removal)
+		}
 	}
 	// A column changes after the indexes it may lose are gone and before the
 	// indexes it may gain are built.
@@ -340,6 +365,9 @@ func (p *planner) claimAlteration(index int, table *protocol.PlanningTable, comm
 		target := change.GetSubject()
 		switch {
 		case target.GetKind() == "column" && change.GetAction() == protocol.PlanningEffect_DROP:
+			if err := p.heldPolicyColumn(index, table, target.GetName().GetSource()); err != nil {
+				return nil, "", err
+			}
 			step, err := p.replace(index, common, rankColumn, tableop.Operation{Action: tableop.DropColumn, Name: target.GetName().GetSource()}, protocol.NativeOperation_ALTER_TABLE)
 			return step, "column-removal", err
 		case target.GetKind() == "index" && change.GetAction() == protocol.PlanningEffect_DROP:

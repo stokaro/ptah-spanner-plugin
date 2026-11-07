@@ -1,10 +1,12 @@
 // Package backend serves Cloud Spanner's PostgreSQL interface to Ptah through
 // the experimental provider protocol. It opens sessions through PGAdapter,
-// reads tables, columns, primary keys and secondary indexes from
-// information_schema, owns the lifecycle of the engine's tables (it checks a
-// declaration, predicts what a creation holds, judges column types and
-// defaults in Spanner's spelling and plans every table statement), and
-// renders and runs the statements it plans.
+// reads tables, columns, primary keys, secondary indexes and row deletion
+// policies from information_schema, owns the lifecycle of the engine's tables
+// (it checks a declaration, predicts what a creation holds, judges column
+// types and defaults in Spanner's spelling and plans every table statement),
+// and renders and runs the statements it plans. It reads and writes a table's
+// row deletion policy in Go, YAML and HCL sources, and compares, reverses and
+// counts it.
 //
 // The provider describes what it reads completely or refuses the read: an
 // object it does not describe yet, such as a foreign key or a view, fails the
@@ -21,7 +23,9 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/policysource"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/tablefacets"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableplan"
 )
@@ -113,6 +117,19 @@ func providerFeatures() []string {
 		provider.NormalizeValuesFeature,
 		// The host takes a lock before it applies a plan; see locks.go.
 		provider.LocksFeature,
+		// A table's row deletion policy: Go, YAML and HCL sources declare
+		// it and exports write it (see policysource), the comparison and
+		// its reversal read the interval by the hours it denotes, and
+		// `ptah schema stats` counts the tables that have one (see
+		// tablefacets).
+		provider.DecodeSourceFeature,
+		provider.EncodeSourceFeature,
+		provider.ConvertValuesFeature,
+		provider.HCLSourceFeature,
+		provider.HCLPlatformFeature,
+		provider.CompareModelsFeature,
+		provider.ReverseChangesFeature,
+		provider.ReportCountsFeature,
 	}
 }
 
@@ -145,8 +162,14 @@ func Description() *protocol.Description {
 			Features:      engineFeatures(),
 			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, rowdeletion.Models()...),
 			Planning: []*protocol.ModelPlanning{{
-				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), OperationKinds: []string{tableop.Kind},
+				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), ChangeKinds: tableplan.ChangeKinds(), OperationKinds: []string{tableop.Kind},
 			}},
+			Comparisons:        []*protocol.ModelComparison{tablefacets.Comparison()},
+			Reversals:          []*protocol.ModelReversal{tablefacets.Reversal()},
+			Reports:            tablefacets.Reports(),
+			YamlSourceKeys:     policysource.YAMLKeys(),
+			GoSourceDirectives: policysource.GoDirectives(),
+			HclSource:          &protocol.HCLSourceDeclaration{Blocks: []*protocol.HCLSourceBlock{policysource.HCLPlatformBlock()}},
 		}},
 	}
 }

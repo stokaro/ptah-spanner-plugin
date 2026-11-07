@@ -19,6 +19,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 )
 
 // Queryer runs a catalog query. *pgx.Conn implements it.
@@ -39,6 +41,9 @@ type Table struct {
 	// indexes Spanner creates for itself, such as the one backing a foreign
 	// key, are left out.
 	Indexes []Index
+	// RowDeletion is the table's row deletion policy, with the interval in
+	// the spelling the server stored, or nil for none.
+	RowDeletion *rowdeletion.Policy
 }
 
 // Column is one column of a table.
@@ -105,9 +110,10 @@ func Read(ctx context.Context, q Queryer, schemas []string) ([]Table, error) {
 	return tables, nil
 }
 
-// baseTables lists the base tables of a schema. A table interleaved in a
-// parent, or carrying a row deletion policy, is refused: the provider does
-// not describe either yet.
+// baseTables lists the base tables of a schema with their row deletion
+// policies. A table interleaved in a parent is refused: the provider does not
+// describe it yet. So is a policy the provider cannot read back, because a
+// table read without it would be planned to lose it.
 func baseTables(ctx context.Context, q Queryer, schema string) ([]Table, error) {
 	rows, err := q.Query(ctx, `SELECT table_schema, table_name, parent_table_name, row_deletion_policy_expression
 FROM information_schema.tables
@@ -127,10 +133,17 @@ ORDER BY table_name`, schema)
 		if parent != nil && *parent != "" {
 			return nil, &Unsupported{Reason: fmt.Sprintf("table %s is interleaved in a parent table, which the provider does not describe yet", qualified(schema, name))}
 		}
-		if policy != nil && *policy != "" {
-			return nil, &Unsupported{Reason: fmt.Sprintf("table %s has a row deletion policy, which the provider does not describe yet", qualified(schema, name))}
+		table := Table{Schema: schema, Name: name}
+		if policy != nil {
+			read, found, err := rowdeletion.ParseExpression(*policy)
+			if err != nil {
+				return nil, &Unsupported{Reason: fmt.Sprintf("table %s: %v", qualified(schema, name), err)}
+			}
+			if found {
+				table.RowDeletion = &read
+			}
 		}
-		tables = append(tables, Table{Schema: schema, Name: name})
+		tables = append(tables, table)
 	}
 	return tables, rows.Err()
 }

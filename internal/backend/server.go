@@ -21,5 +21,11 @@ func Server() runtime.Server {
 		TableCreations:  spanner,
 		Columns:         spanner,
 		FeaturePlanner:  spanner,
+		SourceDecoder:   spanner,
+		SourceEncoder:   spanner,
+		ValueConverter:  spanner,
+		ModelComparer:   spanner,
+		ChangeReverser:  spanner,
+		ValueReporter:   spanner,
 	}
 }

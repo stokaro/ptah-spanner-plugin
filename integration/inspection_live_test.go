@@ -32,6 +32,8 @@ type readTable struct {
 	Columns      []readColumn
 	PrimaryKey   []string
 	Indexes      []readIndex
+	// Facets are the canonical projections of the table's facets.
+	Facets []string
 }
 
 func readTables(snapshot *protocol.Schema) []readTable {
@@ -45,6 +47,9 @@ func readTables(snapshot *protocol.Schema) []readTable {
 		}
 		for _, index := range table.GetIndexes() {
 			got.Indexes = append(got.Indexes, readIndex{Name: index.GetName(), Unique: index.GetUnique(), Keys: indexKeys(index), Storing: index.GetIncludeColumns()})
+		}
+		for _, facet := range table.GetFacets() {
+			got.Facets = append(got.Facets, facet.GetKind()+" "+string(facet.GetPayload()))
 		}
 		tables = append(tables, got)
 	}
@@ -68,8 +73,10 @@ func indexKeys(index *protocol.ObservedIndex) []string {
 }
 
 // The read reports what Spanner stores: types in its spelling, the key in key
-// order rather than column order, defaults as stored, and each index's keys
-// with their direction and NULLS ordering and its STORING columns.
+// order rather than column order, defaults as stored, each index's keys with
+// their direction and NULLS ordering and its STORING columns, and a row
+// deletion policy with the interval in the server's spelling and the column
+// by its name, however the catalog quotes it.
 func TestInspectionSubprocess(t *testing.T) {
 	c := testcheck.New(t)
 	address := freshDatabase(c)
@@ -79,6 +86,8 @@ func TestInspectionSubprocess(t *testing.T) {
 		`CREATE UNIQUE INDEX ux_parent_score ON parent (score DESC NULLS LAST) INCLUDE (note)`,
 		`CREATE INDEX ix_parent_note ON parent (note, a DESC)`,
 		`CREATE TABLE plain (id bigint PRIMARY KEY)`,
+		`CREATE TABLE expiring (id bigint PRIMARY KEY, created_at timestamptz) TTL INTERVAL '30 days' ON created_at`,
+		`CREATE TABLE "Mixed" (id bigint PRIMARY KEY, "Seen At" timestamptz) TTL INTERVAL '1 days' ON "Seen At"`,
 	)
 	client := startProvider(c)
 	session := openSession(c, client, address)
@@ -86,6 +95,12 @@ func TestInspectionSubprocess(t *testing.T) {
 	c.Assert(err, qt.IsNil)
 	c.Assert(snapshot.GetComplete(), qt.IsTrue)
 	c.Assert(readTables(snapshot), qt.DeepEquals, []readTable{
+		{Schema: "public", Name: "Mixed", Columns: []readColumn{{Name: "id", Type: "bigint", Nullable: "NO", Key: true},
+			{Name: "Seen At", Type: "timestamp with time zone", Nullable: "YES"}}, PrimaryKey: []string{"id"},
+			Facets: []string{`github.com/stokaro/ptah-spanner-plugin/row-deletion-policy {"column":"Seen At","interval":"24 HOURS"}`}},
+		{Schema: "public", Name: "expiring", Columns: []readColumn{{Name: "id", Type: "bigint", Nullable: "NO", Key: true},
+			{Name: "created_at", Type: "timestamp with time zone", Nullable: "YES"}}, PrimaryKey: []string{"id"},
+			Facets: []string{`github.com/stokaro/ptah-spanner-plugin/row-deletion-policy {"column":"created_at","interval":"4 WEEKS 2 DAYS"}`}},
 		{
 			Schema: "public", Name: "parent",
 			Columns: []readColumn{
@@ -140,8 +155,6 @@ func TestInspectionSubprocess_FailurePath(t *testing.T) {
 			wantErr: `.*\(FailedPrecondition\): table "public"\."ch" has the FOREIGN KEY constraint "fk_ch_p", which the provider does not describe yet`},
 		{name: "a check constraint", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, n bigint, CONSTRAINT n_ok CHECK (n > 0))`},
 			wantErr: `.*\(FailedPrecondition\): table "public"\."t" has the CHECK constraint "n_ok", which the provider does not describe yet`},
-		{name: "a row deletion policy", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, ts timestamptz) TTL INTERVAL '7 days' ON ts`},
-			wantErr: `.*\(FailedPrecondition\): table "public"\."t" has a row deletion policy, which the provider does not describe yet`},
 		{name: "a generated column", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, g bigint GENERATED ALWAYS AS (id * 2) STORED)`},
 			wantErr: `.*\(FailedPrecondition\): column "g" of table "public"\."t" is generated, which the provider does not describe yet`},
 		{name: "a table without a primary key", statements: []string{`CREATE TABLE t (n bigint)`},

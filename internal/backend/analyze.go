@@ -32,6 +32,7 @@ func (*Provider) AnalyzeSQL(ctx context.Context, request *protocol.AnalyzeSQLReq
 		}
 		file := &protocol.SQLFile{}
 		for _, statement := range statements {
+			safety, reason := statementSafety(statement.Kind)
 			file.Statements = append(file.Statements, &protocol.SQLStatement{
 				Start:       uint32(statement.Start), // #nosec G115 -- sqltext.Split refuses a text longer than math.MaxUint32
 				End:         uint32(statement.End),   // #nosec G115 -- sqltext.Split refuses a text longer than math.MaxUint32
@@ -39,13 +40,28 @@ func (*Provider) AnalyzeSQL(ctx context.Context, request *protocol.AnalyzeSQLReq
 				Words:       statement.Words,
 				SourceWords: statement.SourceWords,
 				Canonical:   strings.Join(statement.Words, " "),
-				// Every statement the provider analyzes is common DDL: the host
-				// judges what a common statement does to the schema, and a
-				// DROP is destructive in its judgment, not in the provider's.
-				Safety: protocol.SQLStatement_COMMON_DDL,
+				Safety:      safety,
+				Reason:      reason,
 			})
 		}
 		result.Files = append(result.Files, file)
 	}
 	return result, nil
+}
+
+// statementSafety says how the host judges a statement. A table, column,
+// index or constraint statement is common DDL: the host judges what it does
+// to the schema, and a DROP is destructive in its judgment, not the
+// provider's. A row deletion policy statement is Spanner's own: setting a
+// policy makes Spanner delete the rows older than its interval, and removing
+// one stops that, so both change which rows a table keeps.
+func statementSafety(kind sqltext.Kind) (protocol.SQLStatement_Safety, string) {
+	switch kind {
+	case sqltext.SetRowDeletion:
+		return protocol.SQLStatement_BEHAVIORAL, "Sets a row deletion policy; Spanner deletes the rows older than its interval"
+	case sqltext.DropRowDeletion:
+		return protocol.SQLStatement_BEHAVIORAL, "Removes a row deletion policy; Spanner stops deleting rows"
+	default:
+		return protocol.SQLStatement_COMMON_DDL, ""
+	}
 }
