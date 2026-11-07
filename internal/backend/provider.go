@@ -220,7 +220,7 @@ func engineFeatures() []string {
 }
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider, below the one the SDK it is built with speaks (25.30). The
+// provider, below the one the SDK it is built with speaks (25.31). The
 // additions of contracts 25.28 and 25.29 that it uses are negotiated, and a
 // host that lists none of them is served as before they existed:
 //

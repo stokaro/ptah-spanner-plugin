@@ -284,7 +284,7 @@ engine is removed.
 ## Build and test
 
 The module pins the published SDK, `github.com/stokaro/ptah/provider-sdk`, by
-tag: v0.28.0, which speaks provider contract 25.30. It needs neither the Ptah
+tag: v0.29.0, which speaks provider contract 25.31. It needs neither the Ptah
 source nor a local SDK checkout and has no `replace` directive. The provider
 starts on a Ptah of contract 25.27 or a later minor of 25, and serves an older
 minor without the additions it does not list;
