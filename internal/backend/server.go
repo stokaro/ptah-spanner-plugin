@@ -30,5 +30,6 @@ func Server() runtime.Server {
 		RowWriter:       spanner,
 		Seeds:           spanner,
 		Linter:          spanner,
+		CheckComparer:   spanner,
 	}
 }

@@ -9,7 +9,9 @@
 // A read describes what it returns completely or fails with an *Unsupported
 // error that says what it found and does not describe. Ptah plans to create
 // what a read leaves out, so leaving an object out silently would plan a
-// change the database refuses or, worse, accepts.
+// change the database refuses or, worse, accepts. The foreign keys and CHECKs
+// a table holds are read whole; a caller that cannot pass them on refuses
+// them itself.
 package catalog
 
 import (
@@ -19,6 +21,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
 )
 
 // Queryer runs a catalog query. *pgx.Conn implements it.
@@ -39,6 +43,36 @@ type Table struct {
 	// indexes Spanner creates for itself, such as the one backing a foreign
 	// key, are left out.
 	Indexes []Index
+	// Constraints are the foreign keys and CHECKs the table holds, in name
+	// order. The CHECKs Spanner keeps for its NOT NULL columns are left out:
+	// the columns' nullability says them.
+	Constraints []Constraint
+}
+
+// The constraint types a read reports.
+const (
+	ForeignKey = "FOREIGN KEY"
+	Check      = "CHECK"
+)
+
+// Constraint is a foreign key or a CHECK a table holds.
+type Constraint struct {
+	Name string
+	// Type is ForeignKey or Check.
+	Type string
+	// Columns are a foreign key's columns in key order.
+	Columns []string
+	// RefSchema and RefTable name the table a foreign key references, and
+	// RefColumns its columns, each paired with the column of Columns at the
+	// same position.
+	RefSchema, RefTable string
+	RefColumns          []string
+	// DeleteRule and UpdateRule are a foreign key's rules in the spelling of
+	// information_schema, such as NO ACTION or CASCADE.
+	DeleteRule, UpdateRule string
+	// Clause is a CHECK's expression as the server keeps it, such as
+	// `(score >= '0'::bigint)` for a declared `score >= 0`.
+	Clause string
 }
 
 // Column is one column of a table.
@@ -70,8 +104,9 @@ type Index struct {
 type IndexKey struct {
 	Column     string
 	Descending bool
-	// Nulls is FIRST or LAST when the key names its NULLS ordering, and empty
-	// when the key keeps the default for its direction.
+	// Nulls is FIRST or LAST where the key's NULLS ordering differs from the
+	// default for its direction, and empty where it is the default; see
+	// ddl.IndexKey.StatedNulls.
 	Nulls string
 }
 
@@ -99,6 +134,9 @@ func Read(ctx context.Context, q Queryer, schemas []string) ([]Table, error) {
 			if err := readTable(ctx, q, &found[i]); err != nil {
 				return nil, err
 			}
+		}
+		if err := readConstraints(ctx, q, schema, found); err != nil {
+			return nil, err
 		}
 		tables = append(tables, found...)
 	}
@@ -136,8 +174,7 @@ ORDER BY table_name`, schema)
 }
 
 // refuseUndescribed fails the read when a schema holds an object the
-// provider does not describe yet: a view, or a foreign key or CHECK constraint
-// beyond the NOT NULL checks Spanner keeps for itself.
+// provider does not describe yet: a view.
 func refuseUndescribed(ctx context.Context, q Queryer, schema string) error {
 	view, err := firstName(ctx, q, `SELECT table_schema, table_name FROM information_schema.tables
 WHERE table_type = 'VIEW' AND table_schema = $1 ORDER BY table_name LIMIT 1`, schema)
@@ -147,28 +184,138 @@ WHERE table_type = 'VIEW' AND table_schema = $1 ORDER BY table_name LIMIT 1`, sc
 	if view != "" {
 		return &Unsupported{Reason: fmt.Sprintf("view %s is not described by the provider yet", view)}
 	}
-	rows, err := q.Query(ctx, `SELECT c.table_schema, c.table_name, c.constraint_name, c.constraint_type, k.check_clause
-FROM information_schema.table_constraints c
-LEFT JOIN information_schema.check_constraints k
-  ON k.constraint_schema = c.constraint_schema AND k.constraint_name = c.constraint_name
-WHERE c.table_schema = $1 AND c.constraint_type IN ('FOREIGN KEY', 'CHECK')
-ORDER BY c.table_name, c.constraint_name`, schema)
+	return nil
+}
+
+// readConstraints reads the foreign keys and CHECKs of a schema's tables and
+// gives each table its own.
+func readConstraints(ctx context.Context, q Queryer, schema string, tables []Table) error {
+	byTable := make(map[string]*Table, len(tables))
+	for i := range tables {
+		byTable[tables[i].Name] = &tables[i]
+	}
+	keys, err := readForeignKeys(ctx, q, schema)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var held, table, name, kind string
-		var clause *string
-		if err := rows.Scan(&held, &table, &name, &kind, &clause); err != nil {
-			return err
+	checks, err := readChecks(ctx, q, schema)
+	if err != nil {
+		return err
+	}
+	for _, held := range slices.Concat(keys, checks) {
+		if table := byTable[held.table]; table != nil {
+			table.Constraints = append(table.Constraints, held.Constraint)
 		}
-		if kind == "CHECK" && notNullCheck(table, name, clause) {
+	}
+	for _, table := range tables {
+		slices.SortFunc(table.Constraints, func(a, b Constraint) int { return strings.Compare(a.Name, b.Name) })
+	}
+	return nil
+}
+
+// heldConstraint is a constraint of the table it names.
+type heldConstraint struct {
+	Constraint
+	table string
+}
+
+// readForeignKeys reads the foreign keys of a schema's tables. Each key column
+// is paired with the column of the referenced key at the position
+// position_in_unique_constraint names, as the SQL standard defines it: the
+// referenced key is the primary key or the unique index Spanner builds for the
+// referenced columns, which referential_constraints names.
+//
+// The emulator behind PGAdapter 0.56.2 answers that position in the order the
+// foreign key lists its columns, so a composite key that lists the referenced
+// columns in another order than the referenced key reads back paired in the
+// key's order (stokaro/ptah#4204 S78). Ptah's built-in Spanner engine read the
+// same pairing.
+func readForeignKeys(ctx context.Context, q Queryer, schema string) ([]heldConstraint, error) {
+	rows, err := q.Query(ctx, `SELECT tc.table_name, tc.constraint_name, kcu.column_name, rkcu.table_schema, rkcu.table_name, rkcu.column_name,
+  rc.delete_rule, rc.update_rule, rc.spanner_state
+FROM information_schema.table_constraints tc
+JOIN information_schema.referential_constraints rc
+  ON rc.constraint_schema = tc.constraint_schema AND rc.constraint_name = tc.constraint_name
+JOIN information_schema.key_column_usage kcu
+  ON kcu.constraint_schema = tc.constraint_schema AND kcu.constraint_name = tc.constraint_name
+  AND kcu.table_schema = tc.table_schema AND kcu.table_name = tc.table_name
+LEFT JOIN information_schema.key_column_usage rkcu
+  ON rkcu.constraint_schema = rc.unique_constraint_schema AND rkcu.constraint_name = rc.unique_constraint_name
+  AND rkcu.ordinal_position = kcu.position_in_unique_constraint
+WHERE tc.table_schema = $1 AND tc.constraint_type = 'FOREIGN KEY'
+ORDER BY tc.table_name, tc.constraint_name, kcu.ordinal_position`, schema)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var keys []heldConstraint
+	for rows.Next() {
+		var table, name, column string
+		var refSchema, refTable, refColumn, deleteRule, updateRule, state *string
+		if err := rows.Scan(&table, &name, &column, &refSchema, &refTable, &refColumn, &deleteRule, &updateRule, &state); err != nil {
+			return nil, err
+		}
+		where := fmt.Sprintf("foreign key %q of table %s", name, qualified(schema, table))
+		switch {
+		case refSchema == nil || refTable == nil || refColumn == nil:
+			return nil, &Unsupported{Reason: where + " references a key the catalog does not report"}
+		case state == nil || *state != "COMMITTED":
+			return nil, &Unsupported{Reason: where + " is still being validated; read again once Spanner reports it ready"}
+		}
+		if n := len(keys); n == 0 || keys[n-1].table != table || keys[n-1].Name != name {
+			keys = append(keys, heldConstraint{table: table, Constraint: Constraint{Name: name, Type: ForeignKey, RefSchema: *refSchema, RefTable: *refTable,
+				DeleteRule: text(deleteRule), UpdateRule: text(updateRule)}})
+		}
+		key := &keys[len(keys)-1]
+		if key.RefSchema != *refSchema || key.RefTable != *refTable {
+			return nil, &Unsupported{Reason: where + " references more than one table"}
+		}
+		key.Columns = append(key.Columns, column)
+		key.RefColumns = append(key.RefColumns, *refColumn)
+	}
+	return keys, rows.Err()
+}
+
+// readChecks reads the CHECKs of a schema's tables, each clause as the server
+// keeps it, less the ones Spanner keeps for its NOT NULL columns.
+func readChecks(ctx context.Context, q Queryer, schema string) ([]heldConstraint, error) {
+	rows, err := q.Query(ctx, `SELECT tc.table_name, tc.constraint_name, cc.check_clause, cc.spanner_state
+FROM information_schema.table_constraints tc
+JOIN information_schema.check_constraints cc
+  ON cc.constraint_schema = tc.constraint_schema AND cc.constraint_name = tc.constraint_name
+WHERE tc.table_schema = $1 AND tc.constraint_type = 'CHECK'
+ORDER BY tc.table_name, tc.constraint_name`, schema)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var checks []heldConstraint
+	for rows.Next() {
+		var table, name string
+		var clause, state *string
+		if err := rows.Scan(&table, &name, &clause, &state); err != nil {
+			return nil, err
+		}
+		if notNullCheck(table, name, clause) {
 			continue
 		}
-		return &Unsupported{Reason: fmt.Sprintf("table %s has the %s constraint %q, which the provider does not describe yet", qualified(held, table), kind, name)}
+		where := fmt.Sprintf("CHECK constraint %q of table %s", name, qualified(schema, table))
+		switch {
+		case clause == nil || strings.TrimSpace(*clause) == "":
+			return nil, &Unsupported{Reason: where + " reports no expression"}
+		case state == nil || *state != "COMMITTED":
+			return nil, &Unsupported{Reason: where + " is still being validated; read again once Spanner reports it ready"}
+		}
+		checks = append(checks, heldConstraint{table: table, Constraint: Constraint{Name: name, Type: Check, Clause: *clause}})
 	}
-	return rows.Err()
+	return checks, rows.Err()
+}
+
+func text(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // notNullCheck reports a check Spanner made for a NOT NULL column: it is named
@@ -373,7 +520,10 @@ func uniqueFilter(keys []IndexKey) string {
 }
 
 // indexKey reads a key's column_ordering: ASC or DESC, followed by NULLS FIRST
-// or NULLS LAST when the key names its ordering.
+// or NULLS LAST when the key names its ordering. The ordering is kept only
+// where it differs from the direction's default: the server names it only
+// there, and the index Spanner builds for a foreign key, which reads `ASC
+// NULLS FIRST`, is not read at all.
 func indexKey(column string, ordering *string) (IndexKey, error) {
 	key := IndexKey{Column: column}
 	if ordering == nil {
@@ -388,7 +538,7 @@ func indexKey(column string, ordering *string) (IndexKey, error) {
 	case len(words) == 0:
 		return key, nil
 	case len(words) == 2 && words[0] == "NULLS" && slices.Contains([]string{"FIRST", "LAST"}, words[1]):
-		key.Nulls = words[1]
+		key.Nulls = ddl.IndexKey{Descending: key.Descending, Nulls: words[1]}.StatedNulls()
 		return key, nil
 	default:
 		return IndexKey{}, fmt.Errorf("key %q has an ordering the provider cannot read", column)

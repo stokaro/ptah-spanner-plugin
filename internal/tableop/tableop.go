@@ -59,6 +59,7 @@ const (
 	DropIndex       Action = "drop-index"
 	AddForeignKey   Action = "add-foreign-key"
 	AddCheck        Action = "add-check"
+	DropConstraint  Action = "drop-constraint"
 )
 
 // Operation is one action on the table its envelope names. Each action reads
@@ -73,7 +74,8 @@ type Operation struct {
 	Column *Column `json:"column,omitempty"`
 	// Name is the column a drop-column, alter-column-type, set-default,
 	// drop-default, set-not-null or drop-not-null names, the index a
-	// drop-index drops, or the constraint an add-check adds.
+	// drop-index drops, the constraint an add-check adds, or the foreign key
+	// or CHECK a drop-constraint drops.
 	Name string `json:"name,omitempty"`
 	// Type is the type an alter-column-type gives the column, as declared.
 	Type string `json:"type,omitempty"`
@@ -137,13 +139,13 @@ func buildModel() *protocol.ValueModel {
 		"kind": Kind, "representation": "operation", "schema_version": schemaVersion, "encoding": encoding,
 		"owner": "the table the statement changes: engine spanner, kind table, its schema and its name; no database, catalog or path",
 		"actions": []Action{CreateTable, DropTable, AddColumn, DropColumn, AlterColumnType, SetDefault, DropDefault, SetNotNull, DropNotNull,
-			CreateIndex, DropIndex, AddForeignKey, AddCheck},
+			CreateIndex, DropIndex, AddForeignKey, AddCheck, DropConstraint},
 		"fields": map[string]string{
 			"action":     "required; one schema statement of Spanner's PostgreSQL interface",
 			"columns":    "create-table: every column in order, each with name, type as declared, nullable, an optional default as SQL and an optional named check",
 			"primaryKey": "create-table: the key columns in key order",
 			"column":     "add-column: one column, nullable or with a default and without a check",
-			"name":       "the column an alter, drop-column or drop-default names, the index a drop-index drops, the constraint an add-check adds",
+			"name":       "the column an alter, drop-column or drop-default names, the index a drop-index drops, the constraint an add-check adds or a drop-constraint drops",
 			"type":       "alter-column-type: the type as declared; Spanner changes a type only between character varying and bytea",
 			"default":    "set-default: the SQL that follows DEFAULT",
 			"expression": "add-check: the condition",
@@ -266,6 +268,7 @@ var fields = map[Action][]string{
 	DropIndex:       {"name"},
 	AddForeignKey:   {"foreignKey"},
 	AddCheck:        {"name", "expression"},
+	DropConstraint:  {"name"},
 }
 
 // present lists the operands an operation sets.
@@ -344,6 +347,8 @@ func (o Operation) namedStatement(schema, table string) (string, error) {
 		return ddl.DropNotNull(schema, table, o.Name), nil
 	case DropIndex:
 		return ddl.DropIndex(schema, o.Name), nil
+	case DropConstraint:
+		return ddl.DropConstraint(schema, table, o.Name), nil
 	default:
 		return ddl.AddCheck(schema, table, o.Name, o.Expression)
 	}
@@ -371,6 +376,8 @@ func (o Operation) impact() (protocol.ChangeSemantics_Impact, string) {
 		return protocol.ChangeSemantics_ADDITIVE, "Creates an index"
 	case DropIndex:
 		return protocol.ChangeSemantics_ADDITIVE, "Drops an index; no row changes"
+	case DropConstraint:
+		return protocol.ChangeSemantics_BEHAVIORAL, "Drops a foreign key or CHECK constraint; Spanner stops enforcing it, and no row changes"
 	case CreateTable:
 		return protocol.ChangeSemantics_ADDITIVE, "Creates a table"
 	case AddColumn:

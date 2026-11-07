@@ -3,9 +3,11 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	"github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
@@ -18,9 +20,11 @@ import (
 )
 
 // Inspect reads the base tables of the requested schemas, or of the default
-// schema when the request names none, with their columns, primary keys and
-// secondary indexes. The snapshot is complete or the call fails: an object
-// the provider does not describe yet fails the read with a reason.
+// schema when the request names none, with their columns, primary keys,
+// secondary indexes, and foreign keys and CHECKs where the host negotiated
+// them. The snapshot is complete or the call fails: an object the provider
+// does not describe yet, or a constraint a host that did not negotiate them
+// would miss, fails the read with a reason.
 func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest) (*protocol.Schema, error) {
 	current, err := p.lookup(request.GetSessionId())
 	if err != nil {
@@ -48,7 +52,13 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		TargetFeatures: negotiatedFeatures(ctx),
 		Coverage:       &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
 	}
+	constraints := slices.Contains(snapshot.GetTargetFeatures(), provider.ObservedConstraintsFeature)
 	for _, table := range tables {
+		if held := table.Constraints; !constraints && len(held) > 0 {
+			return nil, runtime.ErrorWithReason(codes.FailedPrecondition, fmt.Sprintf(
+				"table %q.%q has the %s constraint %q, which the provider reports only to a host that reads constraints (contract 25.28)",
+				table.Schema, table.Name, held[0].Type, held[0].Name))
+		}
 		if purpose := reservedPurpose(table); purpose != protocol.ReservedObject_PURPOSE_UNSPECIFIED {
 			identity := &protocol.Reference{Engine: engineID, Database: current.database, Schema: table.Schema, Kind: "table", Name: table.Name}
 			snapshot.ReservedObjects = append(snapshot.ReservedObjects, &protocol.ReservedObject{
@@ -73,8 +83,10 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 }
 
 // observedTable is a read table as the protocol carries it: each column as
-// one complete observation, the primary key in key order, and the secondary
-// indexes. Names compare exactly, so the normalized identity is the identity.
+// one complete observation, the primary key in key order, the secondary
+// indexes, and the foreign keys and CHECKs. A CHECK lists no columns, which
+// the protocol leaves to the server to know. Names compare exactly, so the
+// normalized identity is the identity.
 func observedTable(database string, table catalog.Table) *protocol.Table {
 	identity := &protocol.Reference{Engine: engineID, Database: database, Schema: table.Schema, Kind: "table", Name: table.Name}
 	result := &protocol.Table{Identity: identity, NormalizedIdentity: proto.CloneOf(identity)}
@@ -108,6 +120,18 @@ func observedTable(database string, table catalog.Table) *protocol.Table {
 			observed.Parts = append(observed.Parts, &protocol.CapturedIndexPart{Column: key.Column, Descending: key.Descending, Nulls: key.Nulls})
 		}
 		result.Indexes = append(result.Indexes, observed)
+	}
+	for _, held := range table.Constraints {
+		observed := &protocol.ObservedConstraint{Name: held.Name, TableName: table.Name, Schema: table.Schema, Type: held.Type}
+		if held.Type == catalog.Check {
+			observed.CheckClause = new(held.Clause)
+		} else {
+			observed.ColumnNames = append([]string(nil), held.Columns...)
+			observed.ForeignTable, observed.ForeignSchema = new(held.RefTable), held.RefSchema
+			observed.ForeignColumns = append([]string(nil), held.RefColumns...)
+			observed.DeleteRule, observed.UpdateRule = new(held.DeleteRule), new(held.UpdateRule)
+		}
+		result.Constraints = append(result.Constraints, observed)
 	}
 	return result
 }

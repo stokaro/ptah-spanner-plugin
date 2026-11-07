@@ -139,6 +139,8 @@ func TestDropStatements(t *testing.T) {
 	c.Assert(ddl.DropColumn("public", "t", "c"), qt.Equals, `ALTER TABLE "t" DROP COLUMN "c";`)
 	c.Assert(ddl.DropIndex("public", "t_i"), qt.Equals, `DROP INDEX "t_i";`)
 	c.Assert(ddl.DropIndex("app", "t_i"), qt.Equals, `DROP INDEX "app"."t_i";`)
+	c.Assert(ddl.DropConstraint("public", "ch", "ch_p_fk"), qt.Equals, `ALTER TABLE "ch" DROP CONSTRAINT "ch_p_fk";`)
+	c.Assert(ddl.DropConstraint("app", "ch", "ch_p_fk"), qt.Equals, `ALTER TABLE "app"."ch" DROP CONSTRAINT "ch_p_fk";`)
 }
 
 // Spanner takes one action per ALTER TABLE, so each column change is a

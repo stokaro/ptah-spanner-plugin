@@ -7,28 +7,57 @@ import (
 	"strings"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	"github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/coltype"
+	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableplan"
 )
 
 // PrepareTables states which declared columns are key columns: the table's
-// key list, then each column marked primary, in key order. It reads no
-// database and changes nothing else of a declaration.
+// key list, then each column marked primary, in key order. Where the host
+// negotiated the index NULLS order, it also states the NULLS order of each
+// key part of each declared index, in the form a read states a held one. It
+// reads no database and changes nothing else of a declaration.
 func (*Provider) PrepareTables(ctx context.Context, request *protocol.PrepareTablesRequest) (*protocol.PreparedTables, error) {
 	result := &protocol.PreparedTables{Complete: true}
+	nulls := slices.Contains(request.GetTargetFeatures(), provider.IndexNullsOrderFeature)
 	for _, table := range request.GetTables() {
 		if err := ctx.Err(); err != nil {
 			return nil, status.FromContextError(err).Err()
 		}
-		result.Tables = append(result.Tables, &protocol.PreparedTable{Subject: proto.CloneOf(table.GetSubject()), ColumnPrimaryKeysPrepared: true,
-			ColumnPrimaryKeys: tableplan.PrimaryKey(table.GetDesired())})
+		prepared := &protocol.PreparedTable{Subject: proto.CloneOf(table.GetSubject()), ColumnPrimaryKeysPrepared: true,
+			ColumnPrimaryKeys: tableplan.PrimaryKey(table.GetDesired())}
+		if nulls {
+			prepared.Indexes = preparedIndexes(table.GetDesired())
+		}
+		result.Tables = append(result.Tables, prepared)
 	}
 	return result, nil
+}
+
+// preparedIndexes states the NULLS order of each key part of each index a
+// table declares, in declaration order: FIRST or LAST where it differs from
+// Spanner's default for the part's direction, and empty where it is the
+// default; see ddl.IndexKey.StatedNulls. A key listed as fields is in the default
+// order. Ptah's built-in Spanner engine compared the orders by the same rule.
+func preparedIndexes(table *protocol.DeclaredTable) []*protocol.PreparedIndex {
+	indexes := make([]*protocol.PreparedIndex, 0, len(table.GetIndexes()))
+	for _, index := range table.GetIndexes() {
+		prepared := &protocol.PreparedIndex{Name: index.GetName()}
+		if len(index.GetParts()) == 0 {
+			prepared.Nulls = make([]string, len(index.GetFields()))
+		}
+		for _, part := range index.GetParts() {
+			prepared.Nulls = append(prepared.Nulls, ddl.IndexKey{Descending: part.GetDescending(), Nulls: part.GetNulls()}.StatedNulls())
+		}
+		indexes = append(indexes, prepared)
+	}
+	return indexes
 }
 
 // ProjectTableCreations predicts what a read reports for each declared table

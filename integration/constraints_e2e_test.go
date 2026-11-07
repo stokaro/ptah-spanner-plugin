@@ -27,9 +27,10 @@ CREATE TABLE ca (id bigint PRIMARY KEY, pa_a bigint, pa_b bigint, CONSTRAINT ca_
 
 // Every foreign key of the created tables is a statement after both of its
 // tables, as the built-in planned them, so two tables may reference each
-// other and a composite key with ON DELETE CASCADE is created too. A read of
-// a table with a foreign key stays refused until the provider can report one
-// (stokaro/ptah#4204 S5), so the second run names it.
+// other and a composite key with ON DELETE CASCADE is created too. A host of
+// contract 25.28 reads the keys back, so a second run plans nothing, and a
+// declaration without the tables drops every key before the tables, as the
+// built-in dropped them: Spanner refuses to drop a table a key references.
 func TestHostCreatesForeignKeysE2E(t *testing.T) {
 	c := testcheck.New(t)
 	address := withSearchPath(c, freshDatabase(c))
@@ -46,40 +47,67 @@ JOIN information_schema.referential_constraints r ON r.constraint_name = c.const
 WHERE c.constraint_type = 'FOREIGN KEY' ORDER BY c.constraint_name`), qt.DeepEquals,
 		[]string{"ca ca_pa_fk CASCADE", "ch ch_p_fk NO ACTION", "x x_y_fk NO ACTION", "y y_x_fk NO ACTION"})
 
+	skipBeforeConstraints(c)
 	output, err = planSQL(c, address, foreignKeyTables)
-	c.Assert(err, qt.IsNotNil)
-	c.Assert(output, qt.Contains, `has the FOREIGN KEY constraint "ca_pa_fk", which the provider does not describe yet`)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+
+	output, err = applySQL(c, address, "CREATE TABLE u (id bigint PRIMARY KEY);\n")
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Matches, `(?s).*CREATE TABLE "u" \([^;]*\);\n`+
+		`ALTER TABLE "ca" DROP CONSTRAINT "ca_pa_fk";\nALTER TABLE "ch" DROP CONSTRAINT "ch_p_fk";\n`+
+		`ALTER TABLE "x" DROP CONSTRAINT "x_y_fk";\nALTER TABLE "y" DROP CONSTRAINT "y_x_fk";\n(DROP TABLE "[a-z]+";\n){6}.*`)
+	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> 'ptah_locks'
+ORDER BY table_name`), qt.DeepEquals, []string{"u"})
 }
 
 const checkedTables = "package entities\n\n//ptah:schema:table name=\"authors\"\ntype Author struct {\n" +
 	"\t//ptah:schema:field name=\"id\" type=\"BIGINT\" primary=\"true\"\n\tID int64\n" +
 	"\t//ptah:schema:field name=\"status\" type=\"TEXT\" not_null=\"true\" default=\"active\" check=\"status IN ('active', 'retired')\"\n\tStatus string\n" +
-	"\t//ptah:schema:field name=\"score\" type=\"BIGINT\" not_null=\"true\" default=\"0\" check=\"score >= 0\"\n\tScore int64\n}\n"
+	"\t//ptah:schema:field name=\"score\" type=\"BIGINT\" not_null=\"true\" default=\"0\" check=\"score >= 0\"\n\tScore int64\n" +
+	"\t//ptah:schema:field name=\"kind\" type=\"ENUM\" enum=\"a,b,c\" not_null=\"true\" default=\"a\"\n\tKind string\n" +
+	"\t//ptah:schema:field name=\"price\" type=\"FLOAT8\" check=\"price > 0\"\n\tPrice float64\n}\n"
 
 // A column's CHECK is written in its definition under the name the built-in
-// gave it, `<table>_<column>_check`, and a table CHECK is a statement after
-// the table.
+// gave it, `<table>_<column>_check`, an enum column's values once, and a
+// table CHECK is a statement after the table. A host of contract 25.28 asks
+// the provider whether each CHECK Spanner keeps is the declared one, so a
+// second run plans nothing; the built-in dropped and added `score >= 0` and
+// `price > 0` on every run (stokaro/ptah#4204 S1).
 func TestHostCreatesChecksE2E(t *testing.T) {
 	c := testcheck.New(t)
-	address := withSearchPath(c, freshDatabase(c))
+	entities := withSearchPath(c, freshDatabase(c))
 	dir := writeFiles(c, map[string]string{"entities.go": checkedTables})
-	output, err := hostCommand(c, "schema", "apply", "--db-url", address, "--root-dir", dir, "--auto-approve")
+	output, err := hostCommand(c, "schema", "apply", "--db-url", entities, "--root-dir", dir, "--auto-approve")
 	skipOnOldHost(c, output, err, "does not support SchemaDiff.ConstraintsAdded", hostChange)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Contains, "\"status\" TEXT NOT NULL DEFAULT 'active' CONSTRAINT \"authors_status_check\" CHECK (status IN ('active', 'retired')),\n"+
-		"  \"score\" BIGINT NOT NULL DEFAULT 0 CONSTRAINT \"authors_score_check\" CHECK (score >= 0)\n);\n")
-	c.Assert(queryRows(c, address, `SELECT constraint_name FROM information_schema.check_constraints
-WHERE constraint_name NOT LIKE 'CK_IS_NOT_NULL_%' ORDER BY constraint_name`), qt.DeepEquals, []string{"authors_score_check", "authors_status_check"})
+		"  \"score\" BIGINT NOT NULL DEFAULT 0 CONSTRAINT \"authors_score_check\" CHECK (score >= 0),\n"+
+		"  \"kind\" TEXT NOT NULL DEFAULT 'a' CONSTRAINT \"authors_kind_check\" CHECK (kind IN ('a', 'b', 'c')),\n"+
+		"  \"price\" FLOAT8 CONSTRAINT \"authors_price_check\" CHECK (price > 0)\n);\n")
+	c.Assert(queryRows(c, entities, `SELECT constraint_name FROM information_schema.check_constraints
+WHERE constraint_name NOT LIKE 'CK_IS_NOT_NULL_%' ORDER BY constraint_name`), qt.DeepEquals,
+		[]string{"authors_kind_check", "authors_price_check", "authors_score_check", "authors_status_check"})
 
-	// The table CHECK in a database of its own: a read of the first
-	// database is refused while it holds a CHECK (stokaro/ptah#4204 S5).
-	address = withSearchPath(c, freshDatabase(c))
-	output, err = applySQL(c, address, "CREATE TABLE k (id bigint PRIMARY KEY, score bigint NOT NULL DEFAULT 0, CONSTRAINT k_score_check CHECK (score >= 0));\n")
+	// The table CHECK in a database of its own: a host older than contract
+	// 25.28 reads no CHECK, so the provider refuses the read of the first
+	// database.
+	const table = "CREATE TABLE k (id bigint PRIMARY KEY, score bigint NOT NULL DEFAULT 0, CONSTRAINT k_score_check CHECK (score >= 0));\n"
+	address := withSearchPath(c, freshDatabase(c))
+	output, err = applySQL(c, address, table)
 	skipOnOldHost(c, output, err, "does not support SchemaDiff.ConstraintsAdded", hostChange)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Contains, "ALTER TABLE \"k\" ADD CONSTRAINT \"k_score_check\" CHECK (score >= 0);\n")
 	c.Assert(queryRows(c, address, `SELECT constraint_name FROM information_schema.check_constraints
 WHERE constraint_name NOT LIKE 'CK_IS_NOT_NULL_%' ORDER BY constraint_name`), qt.DeepEquals, []string{"k_score_check"})
+
+	skipBeforeConstraints(c)
+	output, err = hostCommand(c, "schema", "apply", "--db-url", entities, "--root-dir", dir, "--dry-run")
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+	output, err = planSQL(c, address, table)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
 }
 
 // `ptah db read` writes the tables, the keys and the indexes the provider
