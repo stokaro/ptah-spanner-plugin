@@ -1,8 +1,10 @@
 // Package backend serves Cloud Spanner's PostgreSQL interface to Ptah through
 // the experimental provider protocol. It opens sessions through PGAdapter,
 // reads tables, columns, primary keys and secondary indexes from
-// information_schema, renders and runs the statements the host plans for
-// them, and judges column types and defaults in Spanner's spelling.
+// information_schema, owns the lifecycle of the engine's tables (it checks a
+// declaration, predicts what a creation holds, judges column types and
+// defaults in Spanner's spelling and plans every table statement), and
+// renders and runs the statements it plans.
 //
 // The provider describes what it reads completely or refuses the read: an
 // object it does not describe yet, such as a foreign key or a view, fails the
@@ -19,11 +21,14 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
+	"github.com/stokaro/ptah-spanner-plugin/internal/tableplan"
 )
 
 // ProviderID is the identity of this provider and the namespace of its model
 // kinds.
-const ProviderID = "github.com/stokaro/ptah-spanner-plugin"
+const ProviderID = tableop.ProviderID
 
 // engineID is the engine name the host selects this provider by. It is also
 // the scheme of the addresses Open accepts.
@@ -83,8 +88,28 @@ func providerFeatures() []string {
 		provider.ObservedColumnsFeature,
 		provider.ObservedPrimaryKeysFeature,
 		provider.ObservedIndexesFeature,
-		// The SDK pairs the observations above with the normalization
-		// service; the provider declares no model for it.
+		// The provider owns the lifecycle of the engine's tables: it checks a
+		// declaration, states its key columns, predicts what a creation holds,
+		// judges columns in Spanner's spelling, and plans every statement
+		// through its planning service; see tableplan.
+		provider.ValidateSchemaFeature,
+		provider.PrepareTablesFeature,
+		provider.ProjectTableCreationsFeature,
+		provider.ColumnsFeature,
+		provider.PlanFeaturesFeature,
+		// Its steps run in the lifecycle phase, ordered by their effects and
+		// dependencies; see tableplan.planningOperation.
+		provider.PlanningLifecycleFeature,
+		// A changed primary key reaches the planning service, which refuses
+		// it by name: Spanner cannot change a table's key.
+		provider.PrimaryKeyChangesFeature,
+		// Every Ptah command plans in the exact statement style, which is the
+		// only style the provider writes: no statement carries an existence
+		// guard, which Spanner refuses on ALTER.
+		provider.PlanningPolicyFeature,
+		provider.PlanningStatementStyleFeature,
+		// The provider normalizes its table operations and the table settings
+		// its planning service owns.
 		provider.NormalizeValuesFeature,
 		// The host takes a lock before it applies a plan; see locks.go.
 		provider.LocksFeature,
@@ -92,14 +117,10 @@ func providerFeatures() []string {
 }
 
 // engineFeatures is the feature list of the spanner engine: every feature of
-// the provider, and common-table identity, under which the host plans the
-// engine's tables and columns with its common planner and the provider
-// renders each change. The description, the session and the inspection
-// snapshot all report it, so the host holds one target profile for observed,
-// desired and planned values.
-func engineFeatures() []string {
-	return append(providerFeatures(), provider.CommonTableIdentityFeature)
-}
+// the provider. The description, the session and the inspection snapshot all
+// report it, so the host holds one target profile for observed, desired and
+// planned values.
+func engineFeatures() []string { return providerFeatures() }
 
 // minimumContract is the oldest contract a host must speak to start the
 // provider: the one the SDK it is built with speaks, which is the contract its
@@ -122,6 +143,10 @@ func Description() *protocol.Description {
 			Identifiers:   identifierRules(),
 			ReleaseLines:  releaseLines(),
 			Features:      engineFeatures(),
+			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, rowdeletion.Models()...),
+			Planning: []*protocol.ModelPlanning{{
+				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), OperationKinds: []string{tableop.Kind},
+			}},
 		}},
 	}
 }

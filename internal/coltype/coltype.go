@@ -1,6 +1,7 @@
 // Package coltype knows the column types of Spanner's PostgreSQL interface:
-// which spellings a CREATE TABLE accepts and the spelling information_schema
-// reports for each.
+// which spellings a CREATE TABLE accepts, the spelling information_schema
+// reports for each, which changes of type ALTER COLUMN makes in place, and how
+// a default is written and read back.
 //
 // Every fact here was measured on the Cloud Spanner emulator behind PGAdapter
 // 0.56.2, by creating a table with the spelling and reading
@@ -113,4 +114,155 @@ func Canonical(declared string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("type %q is not a column type of Spanner's PostgreSQL interface", declared)
+}
+
+// Same reports whether a declared type and the type a read reports name one
+// column type. A declared spelling Spanner refuses is never the same.
+func Same(declared, observed string) bool {
+	canonical, err := Canonical(declared)
+	if err != nil {
+		return false
+	}
+	return canonical == strings.ToLower(strings.TrimSpace(observed))
+}
+
+// DataType is information_schema.columns.data_type for a canonical type: the
+// type without its length, and ARRAY for an array.
+func DataType(canonical string) string {
+	if strings.HasSuffix(canonical, "[]") {
+		return "ARRAY"
+	}
+	if strings.HasPrefix(canonical, "character varying(") {
+		return "character varying"
+	}
+	return canonical
+}
+
+// Convertible reports whether ALTER COLUMN ... TYPE changes a column from one
+// canonical type to another in place. Measured on the emulator behind PGAdapter
+// 0.56.2, Spanner changes a column between character varying of any length and
+// bytea, and an array of one to an array of the other, and refuses every other
+// change: bigint to double precision answers `Cannot change type of column`.
+// A column that keeps its type converts trivially.
+func Convertible(from, to string) bool {
+	if from == to {
+		return true
+	}
+	fromElement, fromArray := strings.CutSuffix(from, "[]")
+	toElement, toArray := strings.CutSuffix(to, "[]")
+	return fromArray == toArray && textOrBytes(fromElement) && textOrBytes(toElement)
+}
+
+func textOrBytes(canonical string) bool {
+	return canonical == "bytea" || canonical == "character varying" || strings.HasPrefix(canonical, "character varying(")
+}
+
+// DefaultKind says how a stored default reads.
+type DefaultKind int
+
+const (
+	// Absent is a column without a default.
+	Absent DefaultKind = iota
+	// Literal is a constant value: Spanner stores `DEFAULT 0` as
+	// `'0'::bigint` and `DEFAULT 'x'` as `'x'::text`.
+	Literal
+	// Expression is anything else, such as `now()`.
+	Expression
+)
+
+// quotedLiteral is a single-quoted literal with an optional cast, the form
+// Spanner stores a literal default in and the form a SQL schema file writes
+// one in.
+var quotedLiteral = regexp.MustCompile(`^'((?:[^']|'')*)'(?:::[a-z][a-z0-9_. ]*(?:\(\d+\))?(?:\[\])?)?$`)
+
+// ReadDefault reads a default as the server stores it, or as an expression
+// is written: a literal and its value, or an expression and its text.
+func ReadDefault(stored *string) (DefaultKind, string) {
+	if stored == nil {
+		return Absent, ""
+	}
+	text := strings.TrimSpace(*stored)
+	if match := quotedLiteral.FindStringSubmatch(text); match != nil {
+		return Literal, strings.ReplaceAll(match[1], "''", "'")
+	}
+	switch strings.ToLower(text) {
+	case "true", "false":
+		return Literal, strings.ToLower(text)
+	}
+	if plainNumber(text) {
+		return Literal, text
+	}
+	return Expression, text
+}
+
+// LiteralValue is the value a declared literal default stands for. A SQL
+// schema file keeps the literal as written, `'active'`, and a struct tag keeps
+// the bare value, `active`; both stand for the value active.
+func LiteralValue(declared string) string {
+	if match := quotedLiteral.FindStringSubmatch(strings.TrimSpace(declared)); match != nil {
+		return strings.ReplaceAll(match[1], "''", "'")
+	}
+	return declared
+}
+
+// LiteralSQL writes a declared literal default for a column of declaredType in
+// the form Spanner accepts after DEFAULT. A number on a numeric column and a
+// boolean on a boolean column are written bare: Spanner refuses `DEFAULT '7'`
+// on a bigint column with `Expected type INT64; found STRING`. Any other value
+// is a quoted string, and a value already written as a literal is kept as
+// written.
+func LiteralSQL(declaredType, declared string) string {
+	trimmed := strings.TrimSpace(declared)
+	if quotedLiteral.MatchString(trimmed) {
+		return trimmed
+	}
+	canonical, err := Canonical(declaredType)
+	if err == nil {
+		switch canonical {
+		case "boolean":
+			if lowered := strings.ToLower(trimmed); lowered == "true" || lowered == "false" {
+				return lowered
+			}
+		case "bigint", "numeric", "double precision", "real":
+			if plainNumber(trimmed) {
+				return trimmed
+			}
+		}
+	}
+	return "'" + strings.ReplaceAll(declared, "'", "''") + "'"
+}
+
+// plainNumber reports a decimal number written the way SQL writes one. It
+// refuses NaN, Inf and hexadecimal forms, which strconv.ParseFloat accepts and
+// a bare SQL default does not.
+func plainNumber(value string) bool {
+	digits := strings.TrimLeft(value, "+-")
+	if digits == "" || len(value)-len(digits) > 1 {
+		return false
+	}
+	mantissa, exponent, hasExponent := strings.Cut(strings.ToLower(digits), "e")
+	if hasExponent && !allDigits(strings.TrimLeft(exponent, "+-")) {
+		return false
+	}
+	whole, fraction, hasPoint := strings.Cut(mantissa, ".")
+	switch {
+	case !hasPoint:
+		return allDigits(whole)
+	case whole == "":
+		return allDigits(fraction)
+	default:
+		return allDigits(whole) && (fraction == "" || allDigits(fraction))
+	}
+}
+
+func allDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

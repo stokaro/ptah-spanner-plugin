@@ -7,19 +7,34 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 )
 
-// NormalizeValues normalizes the provider's own models. The provider declares
-// none yet: its common observations and predictions carry no facet. The SDK
-// requires the service beside complete column observations, so it answers an
-// empty batch and refuses any value, which no host sends to a provider that
-// declares no model.
+// NormalizeValues normalizes the provider's own models: the table operations
+// it plans, and the row deletion policy its table lifecycle service owns. A
+// value of any other model refuses the batch.
 func (*Provider) NormalizeValues(ctx context.Context, request *protocol.NormalizeValuesRequest) (*protocol.NormalizedValues, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	result := &protocol.NormalizedValues{Complete: true}
+	for _, input := range request.GetValues() {
+		if err := ctx.Err(); err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
+		var normalized *protocol.NormalizedValue
+		var err error
+		switch input.GetValue().GetKind() {
+		case tableop.Kind:
+			normalized, err = tableop.Normalize(input)
+		case rowdeletion.Kind:
+			normalized, err = rowdeletion.Normalize(input)
+		default:
+			return nil, runtime.ErrorWithReason(codes.InvalidArgument, "the provider normalizes its table operations and row deletion policies only")
+		}
+		if err != nil {
+			return nil, runtime.ErrorWithReason(codes.InvalidArgument, err.Error())
+		}
+		result.Values = append(result.Values, normalized)
 	}
-	if len(request.GetValues()) != 0 {
-		return nil, runtime.ErrorWithReason(codes.InvalidArgument, "the provider declares no value model to normalize")
-	}
-	return &protocol.NormalizedValues{Complete: true}, nil
+	return result, nil
 }

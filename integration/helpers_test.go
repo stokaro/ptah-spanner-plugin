@@ -7,10 +7,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	qt "github.com/frankban/quicktest"
@@ -156,3 +158,55 @@ func writeFiles(c *qt.C, files map[string]string) string {
 	}
 	return dir
 }
+
+// applySQL runs `ptah schema apply` of the SQL schema document schema on
+// address, approving it, and returns what the host wrote and its error.
+func applySQL(c *qt.C, address, schema string) (string, error) {
+	c.Helper()
+	path := filepath.Join(writeFiles(c, map[string]string{"schema.sql": schema}), "schema.sql")
+	return hostCommand(c, "schema", "apply", "--db-url", address, "--schema-file", path, "--auto-approve")
+}
+
+// planSQL runs `ptah schema apply --dry-run` of the SQL schema document
+// schema on address and returns what the host wrote and its error.
+func planSQL(c *qt.C, address, schema string) (string, error) {
+	c.Helper()
+	path := filepath.Join(writeFiles(c, map[string]string{"schema.sql": schema}), "schema.sql")
+	return hostCommand(c, "schema", "apply", "--db-url", address, "--schema-file", path, "--dry-run")
+}
+
+// skipOnOldHost skips the test when the host answered with refusal, the words
+// of a host that lacks change, which the test needs. Any other error fails
+// later, at the test's own assertion, so a host with the change cannot pass by
+// skipping.
+func skipOnOldHost(c *qt.C, output string, err error, refusal, change string) {
+	c.Helper()
+	if err != nil && strings.Contains(output, refusal) {
+		c.Skipf("the host predates %s: %s", change, refusal)
+	}
+}
+
+// queryRows runs a catalog query on the database address names and returns
+// each row as its fields' text joined by spaces.
+func queryRows(c *qt.C, address, query string) []string {
+	c.Helper()
+	rows, err := connect(c, address).Query(c.Context(), query)
+	c.Assert(err, qt.IsNil)
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		values, err := rows.Values()
+		c.Assert(err, qt.IsNil)
+		fields := make([]string, len(values))
+		for i, value := range values {
+			fields[i] = fmt.Sprint(value)
+		}
+		result = append(result, strings.Join(fields, " "))
+	}
+	c.Assert(rows.Err(), qt.IsNil)
+	return result
+}
+
+// synced is what `ptah schema apply` writes when the database already holds
+// the declaration.
+const synced = "Schema is synced, no changes to be made."

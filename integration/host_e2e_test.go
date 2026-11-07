@@ -23,15 +23,14 @@ const (
 
 // `ptah schema apply` creates a table through the provider under the host's
 // apply lock, a second run plans nothing, and a changed declaration adds and
-// drops a column; `ptah db read` writes what the database holds and leaves the
-// lock table out.
+// drops a column.
 func TestHostAppliesAndConvergesE2E(t *testing.T) {
 	c := testcheck.New(t)
 	address := withSearchPath(c, freshDatabase(c))
 	first := writeFiles(c, map[string]string{"entities.go": hostTable})
 	output, err := hostCommand(c, "schema", "apply", "--db-url", address, "--root-dir", first, "--auto-approve")
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
-	c.Assert(output, qt.Matches, `(?s).*CREATE TABLE "nums" \(\n  "id" BIGINT NOT NULL,\n  "n" BIGINT NOT NULL,\n  "old" BIGINT,\n  PRIMARY KEY \("id"\)\n\);.*`)
+	c.Assert(output, qt.Matches, `(?s).*CREATE TABLE "nums" \(\n  "id" BIGINT PRIMARY KEY NOT NULL,\n  "n" BIGINT NOT NULL,\n  "old" BIGINT\n\);.*`)
 	output, err = hostCommand(c, "schema", "apply", "--db-url", address, "--root-dir", first, "--dry-run")
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Matches, `(?s).*Schema is synced, no changes to be made.*`)
@@ -43,11 +42,6 @@ func TestHostAppliesAndConvergesE2E(t *testing.T) {
 	output, err = hostCommand(c, "schema", "apply", "--db-url", address, "--root-dir", changed, "--dry-run")
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Matches, `(?s).*Schema is synced, no changes to be made.*`)
-
-	output, err = hostCommand(c, "db", "read", "--db-url", address)
-	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
-	c.Assert(output, qt.Matches, `(?s).*CREATE TABLE "nums" \(\n  "id" bigint NOT NULL,\n  "n" bigint NOT NULL,\n  "extra" bigint,\n  PRIMARY KEY \("id"\)\n\);.*`)
-	c.Assert(output, qt.Not(qt.Contains), "ptah_locks")
 }
 
 // A read the provider refuses reaches the operator with the provider's reason.

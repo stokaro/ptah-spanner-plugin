@@ -41,13 +41,22 @@ func TestDescription_NamesCompareExactly(t *testing.T) {
 	c.Assert(rules.GetIndexNamespace(), qt.Equals, protocol.IdentifierRules_SCHEMA)
 }
 
-// The host plans the engine's tables and columns with its common planner, and
-// the provider renders each change.
-func TestDescription_TheHostPlansCommonTables(t *testing.T) {
+// The provider owns the lifecycle of the engine's tables: one planning
+// service with parent kinds plans every table statement, so the host plans no
+// common table, and a changed primary key reaches it to be refused by name.
+func TestDescription_TheProviderOwnsItsTables(t *testing.T) {
 	c := testcheck.New(t)
 	description := backend.Description()
-	c.Assert(description.GetEngines()[0].GetFeatures(), qt.Contains, provider.CommonTableIdentityFeature)
-	c.Assert(description.GetFeatures(), qt.Not(qt.Contains), provider.PlanFeaturesFeature)
+	engine := description.GetEngines()[0]
+	c.Assert(engine.GetFeatures(), qt.Not(qt.Contains), provider.CommonTableIdentityFeature)
+	for _, feature := range []string{provider.PlanFeaturesFeature, provider.ValidateSchemaFeature, provider.PrepareTablesFeature, provider.ProjectTableCreationsFeature,
+		provider.ColumnsFeature, provider.PlanningLifecycleFeature, provider.PrimaryKeyChangesFeature, provider.PlanningStatementStyleFeature} {
+		c.Assert(engine.GetFeatures(), qt.Contains, feature)
+		c.Assert(description.GetFeatures(), qt.Contains, feature)
+	}
+	c.Assert(engine.GetPlanning(), qt.HasLen, 1)
+	c.Assert(engine.GetPlanning()[0].GetParentKinds(), qt.DeepEquals, []string{"github.com/stokaro/ptah-spanner-plugin/row-deletion-policy"})
+	c.Assert(engine.GetPlanning()[0].GetOperationKinds(), qt.DeepEquals, []string{"github.com/stokaro/ptah-spanner-plugin/table-operation"})
 }
 
 // The only line runs on the emulator in CI and stays best effort, because

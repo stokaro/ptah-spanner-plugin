@@ -9,12 +9,14 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
+	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 )
 
-// Render writes one statement for each change the host planned, in the order
-// the changes arrive. It connects to nothing. A change it cannot write refuses
-// the whole batch, so the host never receives part of a plan.
+// Render writes the SQL statement of each table operation the provider
+// planned, in the order the changes arrive, in either form the host asks for:
+// every operation is one statement, so the executed units and a migration
+// file hold the same text. It connects to nothing. A change it cannot write
+// refuses the whole batch, so the host never receives part of a plan.
 func (*Provider) Render(ctx context.Context, request *protocol.RenderRequest) (*protocol.RenderResult, error) {
 	result := &protocol.RenderResult{Complete: true}
 	for _, change := range request.GetChanges() {
@@ -30,54 +32,38 @@ func (*Provider) Render(ctx context.Context, request *protocol.RenderRequest) (*
 	return result, nil
 }
 
-// renderChange writes the statement of one change.
+// renderChange writes the statement of one native table operation. The
+// operation's owner is its table; an ALTER_TABLE operation names the same
+// table as its parent.
 func renderChange(change *protocol.Change) (string, error) {
-	object := change.GetObject()
-	if object.GetName() == "" || object.GetCatalog() != "" || len(object.GetPath()) != 0 {
-		return "", refusal("a Spanner table has a schema and a name and nothing else")
+	native := change.GetNative()
+	if native == nil {
+		return "", refusal("the provider renders the table operations it plans and nothing else")
 	}
-	schema, table := object.GetSchema(), object.GetName()
-	switch operation := change.GetOperation().(type) {
-	case *protocol.Change_CreateTable:
-		return createTable(schema, table, operation.CreateTable)
-	case *protocol.Change_DropTable:
-		return ddl.DropTable(schema, table), nil
-	case *protocol.Change_AddColumn:
-		if operation.AddColumn.GetPrimaryKey() {
-			return "", refusal("Spanner cannot add a primary key column to an existing table")
+	owner := native.GetValue().GetValue().GetOwner()
+	switch native.GetRole() {
+	case protocol.NativeOperation_STATEMENT:
+		if native.GetParent() != nil {
+			return "", refusal("a standalone table operation has no parent")
 		}
-		if len(operation.AddColumn.GetFacets()) != 0 {
-			return "", refusal("the provider adds a column with no engine settings")
+	case protocol.NativeOperation_ALTER_TABLE:
+		// The host names a table in the default schema without its schema.
+		parent := native.GetParent()
+		schema := parent.GetSchema()
+		if schema == "" {
+			schema = defaultSchema
 		}
-		return ddl.AddColumn(schema, table, ddlColumn(operation.AddColumn))
-	case *protocol.Change_DropColumn:
-		return ddl.DropColumn(schema, table, operation.DropColumn), nil
+		if parent.GetName() != owner.GetName() || schema != owner.GetSchema() || parent.GetKind() != "table" {
+			return "", refusal("a table operation names its own table as its parent")
+		}
 	default:
-		return "", refusal("the provider creates and drops tables and adds and drops columns; other changes come with later releases")
+		return "", refusal("a table operation is a statement or an ALTER TABLE")
 	}
-}
-
-// createTable writes CREATE TABLE for a planned table.
-func createTable(schema, name string, table *protocol.Table) (string, error) {
-	if len(table.GetFacets()) != 0 || len(table.GetIndexes()) != 0 || table.GetPrimaryKey() != nil {
-		return "", refusal("the provider creates a table from its columns alone")
+	statement, err := tableop.Statement(native.GetValue())
+	if err != nil {
+		return "", refusal(err.Error())
 	}
-	columns := make([]ddl.Column, 0, len(table.GetColumns()))
-	var primaryKey []string
-	for _, column := range table.GetColumns() {
-		if len(column.GetFacets()) != 0 || column.GetObserved() != nil {
-			return "", refusal("the provider creates a column from its name, type, nullability and default alone")
-		}
-		columns = append(columns, ddlColumn(column))
-		if column.GetPrimaryKey() {
-			primaryKey = append(primaryKey, column.GetName())
-		}
-	}
-	return ddl.CreateTable(schema, name, columns, primaryKey)
-}
-
-func ddlColumn(column *protocol.Column) ddl.Column {
-	return ddl.Column{Name: column.GetName(), Type: column.GetType(), Nullable: column.GetNullable(), Default: column.DefaultExpression}
+	return statement, nil
 }
 
 // refusal is a reason the provider shows the operator. It names what the

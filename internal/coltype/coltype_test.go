@@ -85,3 +85,143 @@ func TestCanonical_FailurePath(t *testing.T) {
 		})
 	}
 }
+
+func TestSame(t *testing.T) {
+	tests := []struct {
+		name, declared, observed string
+		want                     bool
+	}{
+		{name: "text and character varying", declared: "TEXT", observed: "character varying", want: true},
+		{name: "a length on both sides", declared: "VARCHAR(20)", observed: "character varying(20)", want: true},
+		{name: "a different length", declared: "VARCHAR(20)", observed: "character varying(30)", want: false},
+		{name: "a length on one side", declared: "TEXT", observed: "character varying(30)", want: false},
+		{name: "integer spellings", declared: "INTEGER", observed: "bigint", want: true},
+		{name: "a different type", declared: "BIGINT", observed: "double precision", want: false},
+		{name: "a refused declaration", declared: "smallint", observed: "bigint", want: false},
+		{name: "an array", declared: "text[]", observed: "character varying[]", want: true},
+		{name: "an integer array", declared: "int[]", observed: "bigint[]", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			c.Assert(coltype.Same(test.declared, test.observed), qt.Equals, test.want)
+		})
+	}
+}
+
+// Measured on the emulator behind PGAdapter 0.56.2 with ALTER COLUMN ...
+// TYPE: Spanner changes a column between character varying of any length and
+// bytea, arrays of them included, and refuses the rest with `Cannot change
+// type of column`.
+func TestConvertible(t *testing.T) {
+	tests := []struct {
+		name, from, to string
+		want           bool
+	}{
+		{name: "a longer varchar", from: "character varying(20)", to: "character varying(30)", want: true},
+		{name: "a shorter varchar", from: "character varying(20)", to: "character varying(10)", want: true},
+		{name: "text to a bounded varchar", from: "character varying", to: "character varying(100)", want: true},
+		{name: "varchar to bytea", from: "character varying(20)", to: "bytea", want: true},
+		{name: "bytea to text", from: "bytea", to: "character varying", want: true},
+		{name: "an array of text to an array of bytea", from: "character varying[]", to: "bytea[]", want: true},
+		{name: "the same type", from: "bigint", to: "bigint", want: true},
+		{name: "bigint to double precision", from: "bigint", to: "double precision", want: false},
+		{name: "bigint to numeric", from: "bigint", to: "numeric", want: false},
+		{name: "jsonb to text", from: "jsonb", to: "character varying", want: false},
+		{name: "text to jsonb", from: "character varying", to: "jsonb", want: false},
+		{name: "an array to a scalar", from: "character varying[]", to: "character varying", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			c.Assert(coltype.Convertible(test.from, test.to), qt.Equals, test.want)
+		})
+	}
+}
+
+func TestDataType(t *testing.T) {
+	tests := []struct{ canonical, want string }{
+		{canonical: "bigint", want: "bigint"},
+		{canonical: "character varying(20)", want: "character varying"},
+		{canonical: "character varying[]", want: "ARRAY"},
+		{canonical: "timestamp with time zone", want: "timestamp with time zone"},
+	}
+	for _, test := range tests {
+		t.Run(test.canonical, func(t *testing.T) {
+			c := testcheck.New(t)
+			c.Assert(coltype.DataType(test.canonical), qt.Equals, test.want)
+		})
+	}
+}
+
+// The stored spellings of defaults, measured on the emulator: `DEFAULT 0` on a
+// bigint is `'0'::bigint`, `DEFAULT 'active'` on text is `'active'::text`. A
+// SQL schema file writes a literal quoted and without a cast.
+func TestReadDefault(t *testing.T) {
+	tests := []struct {
+		name   string
+		stored *string
+		kind   coltype.DefaultKind
+		value  string
+	}{
+		{name: "no default", stored: nil, kind: coltype.Absent, value: ""},
+		{name: "a cast integer", stored: new("'0'::bigint"), kind: coltype.Literal, value: "0"},
+		{name: "a cast string", stored: new("'active'::text"), kind: coltype.Literal, value: "active"},
+		{name: "a doubled quote", stored: new("'it''s'::character varying"), kind: coltype.Literal, value: "it's"},
+		{name: "a cast with a length", stored: new("'x'::character varying(20)"), kind: coltype.Literal, value: "x"},
+		{name: "a quoted literal without a cast", stored: new("'x'"), kind: coltype.Literal, value: "x"},
+		{name: "a boolean", stored: new("TRUE"), kind: coltype.Literal, value: "true"},
+		{name: "a bare number", stored: new("1.5"), kind: coltype.Literal, value: "1.5"},
+		{name: "not a number", stored: new("NaN"), kind: coltype.Expression, value: "NaN"},
+		{name: "a function", stored: new("now()"), kind: coltype.Expression, value: "now()"},
+		{name: "a spaced expression", stored: new("  (a + 1) "), kind: coltype.Expression, value: "(a + 1)"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			kind, value := coltype.ReadDefault(test.stored)
+			c.Assert(kind, qt.Equals, test.kind)
+			c.Assert(value, qt.Equals, test.value)
+		})
+	}
+}
+
+func TestLiteralValue(t *testing.T) {
+	tests := []struct{ declared, want string }{
+		{declared: "active", want: "active"},
+		{declared: "'active'", want: "active"},
+		{declared: "'it''s'", want: "it's"},
+		{declared: "0", want: "0"},
+	}
+	for _, test := range tests {
+		t.Run(test.declared, func(t *testing.T) {
+			c := testcheck.New(t)
+			c.Assert(coltype.LiteralValue(test.declared), qt.Equals, test.want)
+		})
+	}
+}
+
+// Spanner refuses a quoted number on a bigint column (`Expected type INT64;
+// found STRING`), so a number on a numeric column and a boolean on a boolean
+// column are written bare, and every other value is a quoted string.
+func TestLiteralSQL(t *testing.T) {
+	tests := []struct {
+		name, declaredType, value, want string
+	}{
+		{name: "a number on bigint", declaredType: "BIGINT", value: "0", want: "0"},
+		{name: "a decimal on numeric", declaredType: "numeric", value: "1.25", want: "1.25"},
+		{name: "a boolean", declaredType: "bool", value: "TRUE", want: "true"},
+		{name: "a string", declaredType: "TEXT", value: "active", want: "'active'"},
+		{name: "a quote in a string", declaredType: "varchar(10)", value: "it's", want: "'it''s'"},
+		{name: "a literal kept as written", declaredType: "text", value: "'x'", want: "'x'"},
+		{name: "a number on text", declaredType: "text", value: "7", want: "'7'"},
+		{name: "not a number on bigint", declaredType: "bigint", value: "NaN", want: "'NaN'"},
+		{name: "a refused type", declaredType: "money", value: "1", want: "'1'"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			c.Assert(coltype.LiteralSQL(test.declaredType, test.value), qt.Equals, test.want)
+		})
+	}
+}
