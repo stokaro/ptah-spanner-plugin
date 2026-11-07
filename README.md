@@ -15,6 +15,11 @@ installing the provider installs no PGAdapter and provisions no database.
 PGAdapter (`gcr.io/cloud-spanner-pg-adapter/pgadapter-emulator:v0.56.2`), which
 is evidence about the PostgreSQL interface, not about the managed service.
 
+The [documentation](docs/README.md) in `docs/` describes how to use the
+provider, what a schema can declare for Spanner, how migrations run and what
+the provider refuses. Ptah publishes those pages on docs.ptah.run under
+`extend/providers/spanner/`.
+
 ## What the provider does
 
 - **Sessions.** An address is `spanner://host:port/database`, with optional

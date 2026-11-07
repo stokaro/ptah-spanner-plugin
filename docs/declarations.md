@@ -1,0 +1,455 @@
+---
+title: Declaring Spanner objects
+description: The column types, keys, indexes, constraints, row deletion policies, views, sequences and schemas the Spanner provider creates, and the statements it writes for them.
+type: reference
+audience:
+  - schema-author
+  - database-engineer
+readerQuestion: "What can a Go, YAML, HCL or SQL schema declare for Spanner, and which statements does the provider write for it?"
+goal: "Declare a Spanner schema that the provider creates and converges on, and predict the statements a plan writes."
+sourceOfTruth:
+  - internal/coltype
+  - internal/tableplan
+  - internal/ddl
+  - internal/checkexpr
+  - internal/policysource
+  - internal/rowdeletion
+  - internal/commonobject
+  - internal/catalog
+  - internal/rowdata
+  - stokaro/ptah#4204
+generated: false
+searchAliases:
+  - "Spanner row deletion policy"
+  - "Spanner TTL"
+  - "Spanner column types"
+  - "START COUNTER WITH"
+overlaps: []
+disposition: keep
+sidebar:
+  order: 2
+---
+
+# Declaring Spanner objects
+
+A schema that targets Spanner declares tables, indexes, constraints, row
+deletion policies, views, sequences and schemas, and the provider turns each
+into the statements Spanner's PostgreSQL interface runs. Each section below
+names what a declaration may hold, the statement a plan writes for it, and what
+the provider refuses. The directives, keys and blocks themselves are Ptah's,
+and every engine shares them: see the
+[Go annotation reference](https://docs.ptah.run/edge/reference/go-annotations/),
+the [YAML schema reference](https://docs.ptah.run/edge/reference/yaml-schema/),
+the [HCL schema reference](https://docs.ptah.run/edge/reference/hcl-schema/)
+and [SQL schema files](https://docs.ptah.run/edge/schema/sql/).
+
+The provider checks a declaration before any statement is sent. A refusal names
+the object and says why, such as:
+
+```text
+column "n" of table "t": type "smallint": Spanner stores integers as bigint only
+```
+
+## What a plan writes
+
+This SQL schema declares two tables, a unique index, a foreign key, a `CHECK`,
+an index with stored columns, a sequence and a view:
+
+```sql
+CREATE TABLE authors (
+  id bigint PRIMARY KEY,
+  name varchar(100) NOT NULL,
+  email text
+);
+CREATE UNIQUE INDEX authors_email ON authors (email);
+CREATE TABLE posts (
+  id bigint PRIMARY KEY,
+  author_id bigint NOT NULL REFERENCES authors (id) ON DELETE CASCADE,
+  title text NOT NULL,
+  score bigint DEFAULT 0 CHECK (score >= 0),
+  created_at timestamptz NOT NULL
+);
+CREATE INDEX posts_author ON posts (author_id, created_at DESC) INCLUDE (title);
+CREATE SEQUENCE ticket_ids START WITH 1000;
+CREATE VIEW top_posts AS SELECT id, title FROM posts WHERE score > 10;
+```
+
+On an empty database the plan holds these statements, measured on the
+emulator:
+
+```sql
+CREATE SEQUENCE "ticket_ids" START COUNTER WITH 1000;
+CREATE TABLE "authors" (
+  "id" bigint PRIMARY KEY NOT NULL,
+  "name" varchar(100) NOT NULL,
+  "email" text
+);
+CREATE TABLE "posts" (
+  "id" bigint PRIMARY KEY NOT NULL,
+  "author_id" bigint NOT NULL,
+  "title" text NOT NULL,
+  "score" bigint DEFAULT 0 CONSTRAINT "posts_score_check" CHECK (score >= 0),
+  "created_at" timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX "authors_email" ON "authors" ("email");
+CREATE INDEX "posts_author" ON "posts" ("author_id", "created_at" DESC) INCLUDE ("title");
+ALTER TABLE "posts" ADD CONSTRAINT "fk_posts_author_id" FOREIGN KEY ("author_id") REFERENCES "authors"("id") ON DELETE CASCADE;
+CREATE VIEW "top_posts" AS
+SELECT id, title FROM posts WHERE score > 10;
+```
+
+Each statement runs on its own, because Spanner runs no schema statement inside
+a transaction. A second plan against the same schema is empty except for the
+view: Spanner stores its condition as `WHERE (score > '10'::bigint)`, and
+[Views](#views) says why that replaces the view on every plan.
+
+## Tables
+
+### Column types
+
+A declared type is compared with the type Spanner stores, so a column declared
+`int` or `text` converges with the `bigint` or `character varying` a read
+reports.
+
+| Declared | Stored as |
+| --- | --- |
+| `bigint`, `int8`, `int`, `integer` | `bigint` |
+| `boolean`, `bool` | `boolean` |
+| `bytea` | `bytea` |
+| `date` | `date` |
+| `double precision`, `float8`, `float` | `double precision` |
+| `real`, `float4` | `real` |
+| `numeric`, `decimal` | `numeric` |
+| `jsonb` | `jsonb` |
+| `text`, `varchar`, `character varying` | `character varying` |
+| `varchar(n)` with `n` from 1 to 2621440 | `character varying(n)`; 2621440 stores no length |
+| `timestamptz`, `timestamp with time zone` | `timestamp with time zone` |
+| `uuid` | `uuid` |
+| `spanner.commit_timestamp` | `spanner.commit_timestamp` |
+| Any of these followed by `[]` | An array of that type |
+
+These types are refused before a statement is sent, with the reason in the
+right column:
+
+| Declared | Reason |
+| --- | --- |
+| `smallint`, `int2`, `int4` | Spanner stores integers as `bigint` only |
+| `serial`, `bigserial` | A serial column is an identity column, which the provider does not describe yet |
+| `timestamp`, `timestamp without time zone` | Spanner has no timestamp without time zone; use `timestamptz` |
+| `json` | Spanner has no `json` type; use `jsonb` |
+| `interval`, `oid` | Spanner refuses a column of that type |
+| `char`, `character`, `bpchar` | Spanner refuses the character type; use `varchar` |
+| `xml` | Spanner has no `xml` type; use `text` |
+| A type with a modifier, such as `numeric(10,2)` or `timestamptz(3)` | Spanner refuses a type modifier |
+| An array of arrays | Spanner refuses it |
+
+### Primary keys
+
+A key is created in key order: `PRIMARY KEY (b, a)` declares a key that starts
+with `b`, and the plan writes it that way. Every key part is an ascending whole
+column. A descending or prefixed key part, and a key with `INCLUDE`, an access
+method or deferral, are refused.
+
+Spanner cannot change a table's key. A plan that changes a key's columns or
+their order is refused with
+`Spanner cannot change a table's primary key; create a new table with the key and copy the rows`,
+and so is a type change of a key column.
+
+A table declared without a primary key is created as written. Spanner keys such
+a table on a hidden column `rowid` of its own. A read leaves that column and its
+key out, so the table reads as declared and the next plan is empty.
+
+### Defaults and NOT NULL
+
+A default is written as declared, with a number or a boolean bare. Spanner
+stores its own spelling, such as `'5'::bigint` for `5`, and the comparison reads
+the stored spelling back, so the default converges. A default
+`nextval('ticket_ids')` converges with the `nextval('ticket_ids'::text)` Spanner
+stores.
+
+Spanner refuses `ADD COLUMN` for a `NOT NULL` column without a default, even on
+an empty table. Such a column is added nullable and made `NOT NULL` by a second
+statement, which the plan marks with a comment:
+
+```sql
+ALTER TABLE "t" ADD COLUMN "d" bigint;
+-- SPANNER: SET NOT NULL fails if any row of "t" holds NULL in "d"; the column declares no default to fill it with.
+ALTER TABLE "t" ALTER COLUMN "d" SET NOT NULL;
+```
+
+On a table that holds rows, the second statement fails, because no row has a
+value for the new column. Give the column a default, which Spanner writes into
+every row, or fill the column before you make it `NOT NULL`.
+
+### Changing a column
+
+A column of a kept table changes with `ALTER TABLE ... ALTER COLUMN`:
+
+- its type, between `character varying` of any length and `bytea`, arrays alike,
+  which is every type change Spanner makes in place;
+- its default, with `SET DEFAULT` or `DROP DEFAULT`;
+- its nullability, with `SET NOT NULL` or `DROP NOT NULL`.
+
+Any other type change is refused before a statement is sent, such as
+`changing column "b" of table "t" from bigint to double precision: Spanner changes a column's type only between character varying and bytea, or the length of character varying`.
+
+A dropped column loses its indexes first, and a dropped table loses its indexes
+and its foreign keys first.
+
+### What a table cannot carry
+
+Spanner has no place for these declarations, and the provider refuses each one
+by name:
+
+- a table collation or engine, a table comment, custom table SQL and triggers;
+- a column collation, a column comment, a `CHECK` that is not enforced, and
+  uniqueness over an expression;
+- a constraint other than a primary key, a unique constraint, a foreign key or a
+  `CHECK`.
+
+Spanner has identity and generated columns, but the provider does not describe
+them yet, and refuses a column declared as either with
+`is an identity column, which the provider does not describe yet` or
+`is a generated column, which the provider does not describe yet`.
+
+## Indexes
+
+An index keeps each key's direction and NULLS ordering and its stored columns,
+which the PostgreSQL interface spells `INCLUDE`:
+
+```sql
+CREATE INDEX "t_i" ON "t" ("a" DESC, "b" NULLS FIRST) INCLUDE ("c");
+```
+
+A unique column is created as a unique index, `"t_e_key"` for column `e` of
+table `t`, because Spanner refuses the `UNIQUE` constraint spelling.
+
+Indexes are compared by uniqueness, by their keys (column, direction and NULLS
+ordering) and by their stored columns. A changed index is dropped and created
+again under its name. A NULLS ordering is stated only where it differs from the
+default for its direction, which is `NULLS LAST` ascending and `NULLS FIRST`
+descending, so an index that spells the default converges with one that leaves
+it out.
+
+These index declarations are refused:
+
+- a `WHERE` filter (`has a WHERE filter, which the provider does not create yet`);
+- an access method, an operator class, storage parameters, `NULLS NOT DISTINCT`
+  or an invisible index, none of which a Spanner index has;
+- a key that is an expression or a column prefix.
+
+The index Spanner builds for a foreign key, on either table, is Spanner's. A
+read leaves it out, so a plan never drops it and an export never writes it.
+
+## Foreign keys and CHECK constraints
+
+A foreign key or a table `CHECK` of a created table is added with `ALTER TABLE
+... ADD CONSTRAINT` after every table the plan creates, so two new tables may
+reference each other. A column `CHECK` stays in `CREATE TABLE`.
+
+A foreign key takes `ON DELETE NO ACTION` or `ON DELETE CASCADE`. These are
+refused before a statement is sent:
+
+- `ON UPDATE` of any kind, and every other `ON DELETE` action;
+- deferral;
+- a column of type `jsonb`, `numeric`, `real` or an array, which Spanner refuses
+  in a key, such as
+  `invalid foreign key: Spanner type jsonb cannot participate in foreign keys: "c"."j" references "p"."id"`;
+- columns whose types differ between the two tables.
+
+On a kept table, a declared foreign key or `CHECK` the table does not hold is
+added, one the table holds and the declaration leaves out is dropped with `ALTER
+TABLE ... DROP CONSTRAINT`, and a changed one is dropped and added again. A drop
+runs before any column of the table changes and before the removal of a table
+the key references, because Spanner refuses either while the constraint stands.
+An addition runs after the column changes and after the creation of a table it
+references. A column added with a `CHECK` is added first, and its constraint
+follows it.
+
+Spanner keeps a `CHECK` in its own spelling: `score >= 0` reads back as
+`(score >= '0'::bigint)`, and `status IN ('a', 'b')` as `(status = ANY
+(ARRAY['a'::text, 'b'::text]))`. The provider reads both texts into the form
+Spanner stores, with literals cast to the column's type, `IN` as `= ANY` of an
+array and `BETWEEN` as two comparisons, so such a `CHECK` converges. A text the
+provider cannot read is replaced on every plan.
+
+### Enum columns
+
+Spanner has no enum type. A column declared with enum values is created as
+`TEXT` under a `CHECK` that lists them, named `<table>_<column>_check`:
+
+```sql
+"kind" TEXT CONSTRAINT "posts_kind_check" CHECK (kind IN ('draft', 'published'))
+```
+
+## Row deletion policies
+
+Spanner deletes a row once an interval has passed since the time a
+`timestamptz` column holds. A table declares the policy with two properties,
+`row_deletion_column` and `row_deletion_interval`.
+
+In Go, they are `platform.spanner` attributes of the table directive:
+
+```go
+//ptah:schema:table name="sessions" platform.spanner.row_deletion_column="created_at" platform.spanner.row_deletion_interval="30 days"
+type Session struct {
+	//ptah:schema:field name="id" type="BIGINT" primary="true"
+	ID int64
+	//ptah:schema:field name="created_at" type="TIMESTAMPTZ" not_null="true"
+	CreatedAt time.Time
+}
+```
+
+In YAML, they sit in the `spanner` group of the table's `platform` key:
+
+```yaml
+tables:
+  sessions:
+    platform:
+      spanner:
+        row_deletion_column: created_at
+        row_deletion_interval: 30 days
+    columns:
+      id: {type: bigint, primary: true}
+      created_at: {type: timestamptz, not_null: true}
+```
+
+In HCL, they are `override` blocks of the table's `platform "spanner"` block:
+
+```hcl
+table "sessions" {
+  schema = schema.public
+  platform "spanner" {
+    override "row_deletion_column" {
+      value = "created_at"
+    }
+    override "row_deletion_interval" {
+      value = "30 days"
+    }
+  }
+  column "id" {
+    type = bigint
+  }
+  column "created_at" {
+    type = timestamptz
+  }
+  primary_key {
+    columns = [column.id]
+  }
+}
+```
+
+A created table carries the policy after its column list:
+
+```sql
+CREATE TABLE "sessions" (
+  "id" BIGINT PRIMARY KEY NOT NULL,
+  "created_at" TIMESTAMPTZ NOT NULL
+) TTL INTERVAL '30 days' ON "created_at";
+```
+
+A kept table's policy changes in place. The plan writes `ALTER TABLE ... ADD
+TTL` for a table without a policy, `ALTER TABLE ... ALTER TTL` for a changed
+one and `ALTER TABLE ... DROP TTL` when the declaration names none, because
+Spanner refuses `ADD` and `ALTER` in each other's place. The change runs after
+the table's column additions and before its column removals, so a policy may
+move to a new column in one plan.
+
+The interval is a number of months, weeks, days or hours that adds up to whole
+days. Spanner stores its own spelling, `30 days` as `4 WEEKS 2 DAYS` and `60
+days` as `2 MONTHS`, counting a month as 30 days, so the comparison reads both
+spellings as hours rather than as text. These declarations are refused before
+anything runs:
+
+- a policy without its column or its interval, or with an empty one;
+- `row_deletion_unit`, because the policy counts from a timestamp and takes no
+  unit;
+- an interval that is not a whole number of days, such as `36 hours`;
+- a column that is not `timestamptz`;
+- a plan that drops the column a kept policy counts from.
+
+A Go or YAML table without the properties declares no policy, so a plan drops
+a policy the table holds. An HCL table without the `platform "spanner"` block
+says nothing about the policy, and the table keeps the one it holds.
+`ptah schema inspect` and `ptah db read` write a policy back with the interval
+in the spelling Spanner stores, and `ptah schema stats` counts the tables that
+hold one as `ptah_schema_spanner_row_deletion_policy_tables`.
+
+A SQL schema file that writes the `TTL INTERVAL ... ON` clause is refused, as
+[Clauses Ptah does not hand the provider](limitations.md#clauses-ptah-does-not-hand-the-provider)
+describes. Declare the policy in Go, YAML or HCL.
+
+## Views
+
+A view is created with `CREATE VIEW`, replaced with `CREATE OR REPLACE VIEW` and
+dropped with `DROP VIEW`:
+
+```go
+//ptah:schema:view name="top_posts" body="SELECT id FROM posts WHERE (score > '10'::bigint)"
+type Objects struct{}
+```
+
+A read reports the query as Spanner stores it. A declared query converges with
+it whatever its case, spacing and quoting, but a condition Spanner rewrites does
+not: `WHERE score > 10` reads back as `WHERE (score > '10'::bigint)`, and the
+view is replaced on every plan until the declaration uses the stored spelling.
+`ptah db read` prints that spelling.
+
+A materialized view, `WITH CHECK OPTION`, a view option such as
+`security_invoker` and a view comment are refused: Spanner has no materialized
+view, writes through no view, reports no view option back and stores no
+comment.
+
+## Sequences
+
+A Spanner sequence is bit-reversed and takes one option, its counter start. The
+provider writes a declared start as `START COUNTER WITH`:
+
+```sql
+CREATE SEQUENCE ticket_ids START WITH 1000;
+```
+
+```sql
+CREATE SEQUENCE "ticket_ids" START COUNTER WITH 1000;
+```
+
+In Go, the same sequence is `//ptah:schema:sequence name="ticket_ids"
+start="1000"`. A changed start is `ALTER SEQUENCE ... RESTART COUNTER WITH`,
+and a removed sequence is `DROP SEQUENCE`. A sequence type other than `bigint`,
+`INCREMENT`, `MINVALUE`, `MAXVALUE`, `CACHE`, `CYCLE`, `OWNED BY` and a comment
+are refused. A read reports each sequence with its counter start, and refuses a
+sequence that skips a range of values.
+
+## Schemas
+
+A table in a schema other than `public` is created after `CREATE SCHEMA IF NOT
+EXISTS`, written once for each schema a plan creates tables in:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS "app";
+CREATE TABLE "app"."t" (
+  "id" bigint PRIMARY KEY NOT NULL
+);
+```
+
+A Go table with `schema="app"`, a YAML table with `schema: app` and a SQL
+`CREATE TABLE app.t` without `CREATE SCHEMA` all plan this way. Read those
+schemas with `--schemas`, such as `--schemas public,app`. A schema declared as
+an object of its own is refused, as
+[Clauses Ptah does not hand the provider](limitations.md#clauses-ptah-does-not-hand-the-provider)
+describes.
+
+## Declared rows
+
+Rows a schema declares with `//ptah:schema:data` are typed, read and written
+by the provider. Each value is compared in one form for its column type, so a
+row Spanner stores in another spelling plans nothing:
+
+- a numeric `1e3` is 1000, and `12.50` is 12.5;
+- JSON members are compared in sorted order, and JSON numbers by value;
+- text in `bytea` hex is the bytes it spells;
+- a moment is rounded to the microsecond Spanner keeps.
+
+A moment written without an offset is UTC. Every moment the provider writes
+carries its offset, because Spanner reads a moment without one in
+America/Los_Angeles.
