@@ -78,6 +78,19 @@ func TestSplit_HappyPath(t *testing.T) {
 			},
 		},
 		{
+			name: "the view and sequence statements the provider renders",
+			text: "CREATE VIEW \"v\" AS\nSELECT id FROM t;\nCREATE OR REPLACE VIEW \"v\" AS\nSELECT id, a FROM t;\nDROP VIEW \"v\";\n" +
+				"CREATE SEQUENCE \"s\" START COUNTER WITH 10;\nALTER SEQUENCE \"s\" RESTART COUNTER WITH 20;\nDROP SEQUENCE \"s\";",
+			want: []span{
+				{Start: 0, End: 36, Line: 1, Kind: sqltext.CreateView, Words: []string{"CREATE", "VIEW", `"v"`, "AS", "SELECT", "ID", "FROM", "T"}},
+				{Start: 37, End: 87, Line: 3, Kind: sqltext.CreateView, Words: []string{"CREATE", "OR", "REPLACE", "VIEW", `"v"`, "AS", "SELECT", "ID", ",", "A", "FROM", "T"}},
+				{Start: 88, End: 102, Line: 5, Kind: sqltext.DropView, Words: []string{"DROP", "VIEW", `"v"`}},
+				{Start: 103, End: 145, Line: 6, Kind: sqltext.CreateSequence, Words: []string{"CREATE", "SEQUENCE", `"s"`, "START", "COUNTER", "WITH", "10"}},
+				{Start: 146, End: 189, Line: 7, Kind: sqltext.AlterSequence, Words: []string{"ALTER", "SEQUENCE", `"s"`, "RESTART", "COUNTER", "WITH", "20"}},
+				{Start: 190, End: 208, Line: 8, Kind: sqltext.DropSequence, Words: []string{"DROP", "SEQUENCE", `"s"`}},
+			},
+		},
+		{
 			name: "the data statements of a migration body",
 			text: "INSERT INTO t VALUES (1);\nupdate t set a = 2;\nDELETE FROM t;\nSELECT 1;",
 			want: []span{
@@ -107,8 +120,9 @@ func TestSplit_FailurePath(t *testing.T) {
 	tests := []struct {
 		name, text, wantErr string
 	}{
-		{name: "a view", text: "CREATE VIEW v AS SELECT 1;", wantErr: `the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX, ` +
-			`ALTER TABLE \.\.\. ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL, INSERT, UPDATE, DELETE and SELECT only`},
+		{name: "a schema", text: "CREATE SCHEMA app;", wantErr: `the provider analyzes CREATE and DROP of a TABLE, an INDEX, a VIEW or a SEQUENCE, ` +
+			`CREATE OR REPLACE VIEW, ALTER SEQUENCE, ALTER TABLE \.\.\. ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL, ` +
+			`INSERT, UPDATE, DELETE and SELECT only`},
 		{name: "a data word alone", text: "DELETE;", wantErr: `the provider analyzes .*`},
 		{name: "an ALTER TABLE of another kind", text: "ALTER TABLE t RENAME TO u;", wantErr: `the provider analyzes .*`},
 		{name: "a short statement", text: "DROP INDEX;", wantErr: `the provider analyzes .*`},

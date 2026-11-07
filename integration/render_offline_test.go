@@ -42,6 +42,6 @@ func TestRenderAndAnalysisOfflineSubprocess(t *testing.T) {
 	refused, err := client.Render(c.Context(), &protocol.RenderRequest{Engine: "spanner", Changes: []*protocol.Change{
 		{Id: "1", Object: table, Operation: &protocol.Change_DropTable{DropTable: &protocol.Empty{}}},
 	}})
-	c.Assert(err, qt.ErrorMatches, `.*\(InvalidArgument\): the provider renders the table operations it plans and nothing else`)
+	c.Assert(err, qt.ErrorMatches, `.*\(InvalidArgument\): the provider renders the table operations it plans, views and sequences, and nothing else`)
 	c.Assert(refused, qt.IsNil)
 }

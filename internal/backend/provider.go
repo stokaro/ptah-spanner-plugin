@@ -24,6 +24,7 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-spanner-plugin/internal/migrationlint"
 	"github.com/stokaro/ptah-spanner-plugin/internal/policysource"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
@@ -171,6 +172,10 @@ func providerFeatures() []string {
 		// The statements an operator writes, such as a migration's check
 		// assertions, run through the provider; see statements.go.
 		provider.StatementsFeature,
+		// Views and sequences travel on the common-object wire: the host
+		// compares and orders them, the provider reads, spells and renders
+		// them; see commonobject.
+		provider.CommonObjectsFeature,
 	}
 }
 
@@ -216,6 +221,7 @@ func Description() *protocol.Description {
 			YamlSourceKeys:     policysource.YAMLKeys(),
 			GoSourceDirectives: policysource.GoDirectives(),
 			HclSource:          &protocol.HCLSourceDeclaration{Blocks: []*protocol.HCLSourceBlock{policysource.HCLPlatformBlock()}},
+			CommonObjects:      commonobject.Support(),
 		}},
 	}
 }

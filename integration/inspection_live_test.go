@@ -139,6 +139,30 @@ func TestInspectionSubprocess_NamedSchema(t *testing.T) {
 	c.Assert(snapshot.GetScopeBindings()[0].GetSelector(), qt.Equals, "app")
 }
 
+// A read that carries common objects reports each view with its query as
+// Spanner stores it and each sequence with its counter start, read through
+// the quoted catalog spelling that answers them, and covers both kinds.
+func TestInspectionSubprocess_ViewsAndSequences(t *testing.T) {
+	c := testcheck.New(t)
+	address := freshDatabase(c)
+	execSQL(c, address, `CREATE TABLE t (id bigint PRIMARY KEY)`, `CREATE VIEW v AS select "id" from t`, `CREATE SEQUENCE s1`,
+		`CREATE SEQUENCE s2 BIT_REVERSED_POSITIVE START COUNTER WITH 1000`)
+	client := startCommonObjectsProvider(c)
+	session := openSession(c, client, address)
+	snapshot, err := client.Inspect(c.Context(), &protocol.InspectRequest{SessionId: session.GetId()})
+	c.Assert(err, qt.IsNil)
+	objects := snapshot.GetCommonObjects()
+	c.Assert(objects.GetViews(), qt.HasLen, 1)
+	c.Assert(objects.GetViews()[0].GetIdentity().GetName(), qt.Equals, "v")
+	c.Assert(objects.GetViews()[0].GetBody(), qt.Equals, "SELECT id FROM t")
+	c.Assert(objects.GetSequences(), qt.HasLen, 2)
+	c.Assert(objects.GetSequences()[0].GetIdentity().GetName(), qt.Equals, "s1")
+	c.Assert(objects.GetSequences()[0].GetStart(), qt.Equals, int64(1))
+	c.Assert(objects.GetSequences()[1].GetStart(), qt.Equals, int64(1000))
+	c.Assert(objects.GetSequences()[1].GetDataType(), qt.Equals, "bigint")
+	c.Assert(objects.GetCoverage(), qt.HasLen, 2)
+}
+
 // A read refuses an object it does not describe yet, with a reason naming it,
 // rather than leaving it out: the host would plan to create what a read leaves
 // out.
@@ -148,8 +172,10 @@ func TestInspectionSubprocess_FailurePath(t *testing.T) {
 		statements []string
 		wantErr    string
 	}{
-		{name: "a view", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY)`, `CREATE VIEW v SQL SECURITY INVOKER AS SELECT id FROM t`},
-			wantErr: `.*\(FailedPrecondition\): view "public"\."v" is not described by the provider yet`},
+		{name: "a view for a host that carries no common object", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY)`, `CREATE VIEW v SQL SECURITY INVOKER AS SELECT id FROM t`},
+			wantErr: `.*\(FailedPrecondition\): view "public"\."v" needs a host that carries views and sequences \(schema\.common-objects\)`},
+		{name: "a sequence for a host that carries no common object", statements: []string{`CREATE SEQUENCE s`},
+			wantErr: `.*\(FailedPrecondition\): sequence "public"\."s" needs a host that carries views and sequences \(schema\.common-objects\)`},
 		{name: "a foreign key", statements: []string{`CREATE TABLE p (id bigint PRIMARY KEY)`,
 			`CREATE TABLE ch (id bigint PRIMARY KEY, p bigint, CONSTRAINT fk_ch_p FOREIGN KEY (p) REFERENCES p (id))`},
 			wantErr: `.*\(FailedPrecondition\): table "public"\."ch" has the FOREIGN KEY constraint "fk_ch_p", which the provider does not describe yet`},

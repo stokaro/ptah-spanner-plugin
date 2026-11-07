@@ -39,5 +39,6 @@ func Server() runtime.Server {
 		DevCleaner:      spanner,
 		ReplayGuard:     spanner,
 		Statements:      spanner,
+		CommonObjects:   spanner,
 	}
 }
