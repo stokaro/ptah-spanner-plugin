@@ -55,6 +55,21 @@ func startProviderWith(c *qt.C, features ...string) *providerruntime.Client {
 	return client
 }
 
+// startCommonObjectsProvider starts the provider for a host that also
+// carries views and sequences on the common-object wire.
+func startCommonObjectsProvider(c *qt.C) *providerruntime.Client {
+	c.Helper()
+	binary, digest := providerBinary(c)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client, err := providerruntime.Start(ctx, providerruntime.Options{
+		Executable: binary, SHA256: digest, ProviderID: backend.ProviderID, HostFeatures: append(hostFeatures(), provider.CommonObjectsFeature),
+	})
+	c.Assert(err, qt.IsNil)
+	c.Cleanup(client.Close)
+	return client
+}
+
 // freshDatabase returns the address of a database no other test uses, on the
 // endpoint testURLVariable names.
 func freshDatabase(c *qt.C) string {

@@ -217,7 +217,7 @@ func TestHostGeneratesMigrationsWithForeignKeysE2E(t *testing.T) {
 	downText, err := os.ReadFile(down[0])
 	c.Assert(err, qt.IsNil)
 	c.Assert(string(downText), qt.Matches, `(?s).*\nALTER TABLE "ch" DROP CONSTRAINT "ch_p_fk";\nALTER TABLE "x" DROP CONSTRAINT "x_y_fk";\n`+
-		`ALTER TABLE "y" DROP CONSTRAINT "y_x_fk";\n(DROP TABLE "[a-z]+";\n){5}.*`)
+		`ALTER TABLE "y" DROP CONSTRAINT "y_x_fk";\nDROP TABLE "ch";\nDROP TABLE "p";\nDROP TABLE "u";\nDROP TABLE "y";\nDROP TABLE "x";\n?`)
 
 	output, err = hostCommand(c, "migrations", "up", "--db-url", address, "--migrations-dir", migrations)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))

@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
+	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 )
 
 // Queryer runs a catalog query. *pgx.Conn implements it.
@@ -36,13 +37,18 @@ type Table struct {
 	Name    string
 	Columns []Column
 	// PrimaryKeyName is the name of the primary key constraint, and
-	// PrimaryKey its columns in key order.
+	// PrimaryKey its columns in key order. A table created without a primary
+	// key has neither: Spanner keys it on a hidden column of its own, which
+	// the read leaves out (see readColumns).
 	PrimaryKeyName string
 	PrimaryKey     []string
 	// Indexes are the secondary indexes a user created, in name order. The
 	// indexes Spanner creates for itself, such as the one backing a foreign
 	// key, are left out.
 	Indexes []Index
+	// RowDeletion is the table's row deletion policy, with the interval in
+	// the spelling the server stored, or nil for none.
+	RowDeletion *rowdeletion.Policy
 	// Constraints are the foreign keys and CHECKs the table holds, in name
 	// order. The CHECKs Spanner keeps for its NOT NULL columns are left out:
 	// the columns' nullability says them.
@@ -123,9 +129,6 @@ func (e *Unsupported) Error() string { return e.Reason }
 func Read(ctx context.Context, q Queryer, schemas []string) ([]Table, error) {
 	var tables []Table
 	for _, schema := range slices.Sorted(slices.Values(schemas)) {
-		if err := refuseUndescribed(ctx, q, schema); err != nil {
-			return nil, err
-		}
 		found, err := baseTables(ctx, q, schema)
 		if err != nil {
 			return nil, err
@@ -143,9 +146,10 @@ func Read(ctx context.Context, q Queryer, schemas []string) ([]Table, error) {
 	return tables, nil
 }
 
-// baseTables lists the base tables of a schema. A table interleaved in a
-// parent, or carrying a row deletion policy, is refused: the provider does
-// not describe either yet.
+// baseTables lists the base tables of a schema with their row deletion
+// policies. A table interleaved in a parent is refused: the provider does not
+// describe it yet. So is a policy the provider cannot read back, because a
+// table read without it would be planned to lose it.
 func baseTables(ctx context.Context, q Queryer, schema string) ([]Table, error) {
 	rows, err := q.Query(ctx, `SELECT table_schema, table_name, parent_table_name, row_deletion_policy_expression
 FROM information_schema.tables
@@ -165,26 +169,19 @@ ORDER BY table_name`, schema)
 		if parent != nil && *parent != "" {
 			return nil, &Unsupported{Reason: fmt.Sprintf("table %s is interleaved in a parent table, which the provider does not describe yet", qualified(schema, name))}
 		}
-		if policy != nil && *policy != "" {
-			return nil, &Unsupported{Reason: fmt.Sprintf("table %s has a row deletion policy, which the provider does not describe yet", qualified(schema, name))}
+		table := Table{Schema: schema, Name: name}
+		if policy != nil {
+			read, found, err := rowdeletion.ParseExpression(*policy)
+			if err != nil {
+				return nil, &Unsupported{Reason: fmt.Sprintf("table %s: %v", qualified(schema, name), err)}
+			}
+			if found {
+				table.RowDeletion = &read
+			}
 		}
-		tables = append(tables, Table{Schema: schema, Name: name})
+		tables = append(tables, table)
 	}
 	return tables, rows.Err()
-}
-
-// refuseUndescribed fails the read when a schema holds an object the
-// provider does not describe yet: a view.
-func refuseUndescribed(ctx context.Context, q Queryer, schema string) error {
-	view, err := firstName(ctx, q, `SELECT table_schema, table_name FROM information_schema.tables
-WHERE table_type = 'VIEW' AND table_schema = $1 ORDER BY table_name LIMIT 1`, schema)
-	if err != nil {
-		return err
-	}
-	if view != "" {
-		return &Unsupported{Reason: fmt.Sprintf("view %s is not described by the provider yet", view)}
-	}
-	return nil
 }
 
 // readConstraints reads the foreign keys and CHECKs of a schema's tables and
@@ -328,13 +325,20 @@ func notNullCheck(table, name string, clause *string) bool {
 }
 
 func readTable(ctx context.Context, q Queryer, table *Table) error {
-	columns, err := readColumns(ctx, q, table)
+	columns, hidden, err := readColumns(ctx, q, table)
 	if err != nil {
 		return err
 	}
 	table.Columns = columns
 	if err := readPrimaryKey(ctx, q, table); err != nil {
 		return err
+	}
+	if hidden != "" {
+		if !slices.Equal(table.PrimaryKey, []string{hidden}) {
+			return &Unsupported{Reason: fmt.Sprintf("table %s has the hidden column %q beside a key of its own, which the provider does not describe",
+				qualified(table.Schema, table.Name), hidden)}
+		}
+		table.PrimaryKey, table.PrimaryKeyName = nil, ""
 	}
 	indexes, err := readIndexes(ctx, q, table)
 	if err != nil {
@@ -344,42 +348,62 @@ func readTable(ctx context.Context, q Queryer, table *Table) error {
 	return nil
 }
 
-func readColumns(ctx context.Context, q Queryer, table *Table) ([]Column, error) {
+// readColumns reads the columns a table declares, in order, and the name of
+// its hidden key column, empty for none.
+//
+// Spanner gives a table created without a primary key a column of its own
+// and keys the table on it. Measured on the emulator behind PGAdapter
+// 0.56.2: `CREATE TABLE t (a bigint)` reads back with a last column rowid,
+// bigint NOT NULL, is_identity YES and is_hidden YES, and a PRIMARY_KEY index
+// on it alone. Nobody declared the column, and a read that reported it would
+// plan to drop it, or write it into an export whose replay builds another
+// table, which is what Ptah's built-in Spanner engine did. So the read leaves
+// it out and the table reads as one without a primary key, as it was
+// declared. Any other identity column is refused.
+func readColumns(ctx context.Context, q Queryer, table *Table) ([]Column, string, error) {
 	rows, err := q.Query(ctx, `SELECT column_name, ordinal_position, data_type, spanner_type, is_nullable, column_default,
-  character_maximum_length, is_generated, is_identity
+  character_maximum_length, is_generated, is_identity, is_hidden
 FROM information_schema.columns
 WHERE table_schema = $1 AND table_name = $2
 ORDER BY ordinal_position`, table.Schema, table.Name)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer rows.Close()
 	var columns []Column
+	hidden := ""
 	for rows.Next() {
 		var column Column
 		var nullable, generated, identity string
+		var invisible *string
 		if err := rows.Scan(&column.Name, &column.Ordinal, &column.DataType, &column.SpannerType, &nullable, &column.Default,
-			&column.MaxLength, &generated, &identity); err != nil {
-			return nil, err
+			&column.MaxLength, &generated, &identity, &invisible); err != nil {
+			return nil, "", err
 		}
-		if generated != "NEVER" {
-			return nil, &Unsupported{Reason: fmt.Sprintf("column %q of table %s is generated, which the provider does not describe yet",
+		switch {
+		case generated != "NEVER":
+			return nil, "", &Unsupported{Reason: fmt.Sprintf("column %q of table %s is generated, which the provider does not describe yet",
+				column.Name, qualified(table.Schema, table.Name))}
+		case identity != "NO" && invisible != nil && *invisible == "YES" && hidden == "":
+			hidden = column.Name
+			continue
+		case identity != "NO":
+			return nil, "", &Unsupported{Reason: fmt.Sprintf("column %q of table %s is an identity column, which the provider does not describe yet",
 				column.Name, qualified(table.Schema, table.Name))}
 		}
-		if identity != "NO" {
-			return nil, &Unsupported{Reason: fmt.Sprintf("column %q of table %s is an identity column, which the provider does not describe yet; "+
-				"Spanner adds one named rowid to a table created without a primary key", column.Name, qualified(table.Schema, table.Name))}
-		}
 		column.Nullable = nullable == "YES"
+		// A column added after the table was created stands after the
+		// hidden one, so the positions count the declared columns alone.
+		column.Ordinal = int64(len(columns) + 1)
 		columns = append(columns, column)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if len(columns) == 0 {
-		return nil, &Unsupported{Reason: fmt.Sprintf("table %s reports no column", qualified(table.Schema, table.Name))}
+		return nil, "", &Unsupported{Reason: fmt.Sprintf("table %s reports no column", qualified(table.Schema, table.Name))}
 	}
-	return columns, nil
+	return columns, hidden, nil
 }
 
 // readPrimaryKey reads the primary key: the columns of the index Spanner names
@@ -543,24 +567,6 @@ func indexKey(column string, ordering *string) (IndexKey, error) {
 	default:
 		return IndexKey{}, fmt.Errorf("key %q has an ordering the provider cannot read", column)
 	}
-}
-
-// firstName runs a query whose rows hold two text columns and returns the
-// first row qualified as schema.name, or the empty string when there is none.
-func firstName(ctx context.Context, q Queryer, query string, args ...any) (string, error) {
-	rows, err := q.Query(ctx, query, args...)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		return "", rows.Err()
-	}
-	var schema, name string
-	if err := rows.Scan(&schema, &name); err != nil {
-		return "", err
-	}
-	return qualified(schema, name), rows.Err()
 }
 
 func qualified(schema, name string) string {

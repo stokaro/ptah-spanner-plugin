@@ -48,7 +48,7 @@ func TestCreateTable_HappyPath(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			c := testcheck.New(t)
-			statement, err := ddl.CreateTable(test.schema, test.table, test.columns, test.primaryKey)
+			statement, err := ddl.CreateTable(test.schema, test.table, test.columns, test.primaryKey, nil)
 			c.Assert(err, qt.IsNil)
 			c.Assert(statement, qt.Equals, test.want)
 		})
@@ -80,7 +80,7 @@ func TestCreateTable_FailurePath(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			c := testcheck.New(t)
-			statement, err := ddl.CreateTable("", test.table, test.columns, test.primaryKey)
+			statement, err := ddl.CreateTable("", test.table, test.columns, test.primaryKey, nil)
 			c.Assert(err, qt.ErrorMatches, test.wantErr)
 			c.Assert(statement, qt.Equals, "")
 		})
@@ -254,5 +254,34 @@ func TestAddCheck_FailurePath(t *testing.T) {
 	c := testcheck.New(t)
 	statement, err := ddl.AddCheck("", "t", "", "a > 0")
 	c.Assert(err, qt.ErrorMatches, `a CHECK constraint of table "t" needs a name and an expression`)
+	c.Assert(statement, qt.Equals, "")
+}
+
+// A row deletion policy follows a CREATE TABLE's column list, and ADD TTL,
+// ALTER TTL and DROP TTL change it on a table that exists, as measured on the
+// emulator behind PGAdapter. The interval is written as declared, with a
+// quote doubled.
+func TestTTL_HappyPath(t *testing.T) {
+	c := testcheck.New(t)
+	ttl := &ddl.TTL{Column: "created_at", Interval: "30 days"}
+	statement, err := ddl.CreateTable("app", "e", []ddl.Column{{Name: "id", Type: "bigint"}, {Name: "created_at", Type: "timestamptz", Nullable: true}}, []string{"id"}, ttl)
+	c.Assert(err, qt.IsNil)
+	c.Assert(statement, qt.Equals, "CREATE TABLE \"app\".\"e\" (\n  \"id\" bigint PRIMARY KEY NOT NULL,\n  \"created_at\" timestamptz\n) TTL INTERVAL '30 days' ON \"created_at\";")
+	statement, err = ddl.AddTTL("", "e", *ttl)
+	c.Assert(err, qt.IsNil)
+	c.Assert(statement, qt.Equals, `ALTER TABLE "e" ADD TTL INTERVAL '30 days' ON "created_at";`)
+	statement, err = ddl.AlterTTL("", "e", ddl.TTL{Column: "seen", Interval: "it's"})
+	c.Assert(err, qt.IsNil)
+	c.Assert(statement, qt.Equals, `ALTER TABLE "e" ALTER TTL INTERVAL 'it''s' ON "seen";`)
+	c.Assert(ddl.DropTTL("public", "e"), qt.Equals, `ALTER TABLE "e" DROP TTL;`)
+}
+
+func TestTTL_FailurePath(t *testing.T) {
+	c := testcheck.New(t)
+	statement, err := ddl.CreateTable("", "e", []ddl.Column{{Name: "id", Type: "bigint"}}, []string{"id"}, &ddl.TTL{Column: "missing", Interval: "30 days"})
+	c.Assert(err, qt.ErrorMatches, `table "e" names row deletion column "missing", which it does not declare`)
+	c.Assert(statement, qt.Equals, "")
+	statement, err = ddl.AddTTL("", "e", ddl.TTL{Column: "c"})
+	c.Assert(err, qt.ErrorMatches, `table "e": a row deletion policy names its column and its interval`)
 	c.Assert(statement, qt.Equals, "")
 }

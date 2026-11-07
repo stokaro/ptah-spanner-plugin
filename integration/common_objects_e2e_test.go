@@ -1,0 +1,133 @@
+//go:build integration
+
+package integration_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	qt "github.com/frankban/quicktest"
+
+	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
+)
+
+// The tests in this file declare views and sequences, which travel on the
+// host's common-object wire, and drive the host binary through the provider
+// against the emulator. The statements are the ones Ptah's built-in Spanner
+// engine wrote for the same declarations, measured at host d59a3b63d on the
+// emulator behind PGAdapter 0.56.2.
+
+const viewTable = "CREATE TABLE t (id bigint PRIMARY KEY, a bigint, b varchar(20));\n"
+
+// A view is created after its table with its query on a line of its own, as
+// declared, and converges against the spelling Spanner stores it in, is replaced in place when its
+// query changes and dropped when it is no longer declared. A read writes it
+// back, `schema stats` counts it, and a generated migration replaces it back
+// in place, where the built-in dropped it and created it again.
+func TestHostCreatesReplacesAndDropsAViewE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	const declared = viewTable + "CREATE VIEW v AS select  \"id\", a from t;\n"
+	output, err := applySQL(c, address, declared)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "CREATE VIEW \"v\" AS\nselect  \"id\", a from t;\n")
+	c.Assert(queryRows(c, address, `SELECT table_name, view_definition FROM information_schema.views WHERE table_schema = 'public'`), qt.DeepEquals,
+		[]string{"v SELECT id, a FROM t"})
+	for _, spelling := range []string{declared, viewTable + "CREATE VIEW v AS SELECT id, a FROM t;\n"} {
+		output, err = planSQL(c, address, spelling)
+		c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+		c.Assert(output, qt.Contains, synced)
+	}
+
+	output, err = hostCommand(c, "schema", "inspect", "--db-url", address, "--format", "hcl")
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "view \"v\" {\n  schema = schema.public\n  as = \"SELECT id, a FROM t\"\n}\n")
+	output, err = hostCommand(c, "schema", "stats", "--db-url", address)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "ptah_schema_views{dialect=\"spanner\"} 1\n")
+
+	const replaced = viewTable + "CREATE VIEW v AS SELECT id, a, b FROM t;\n"
+	migrations := c.TempDir()
+	path := filepath.Join(writeFiles(c, map[string]string{"schema.sql": replaced}), "schema.sql")
+	output, err = hostCommand(c, "migrations", "generate", "--db-url", address, "--schema-file", path, "--migrations-dir", migrations, "--name", "second")
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	down, err := filepath.Glob(filepath.Join(migrations, "*_second.down.sql"))
+	c.Assert(err, qt.IsNil)
+	c.Assert(down, qt.HasLen, 1)
+	reverse, err := os.ReadFile(down[0])
+	c.Assert(err, qt.IsNil)
+	c.Assert(string(reverse), qt.Contains, "\nCREATE OR REPLACE VIEW \"v\" AS\nSELECT id, a FROM t;")
+
+	output, err = applySQL(c, address, replaced)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "CREATE OR REPLACE VIEW \"v\" AS\nSELECT id, a, b FROM t;\n")
+	output, err = planSQL(c, address, replaced)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+
+	output, err = applySQL(c, address, viewTable)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "DROP VIEW \"v\";\n")
+	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.views WHERE table_schema = 'public'`), qt.HasLen, 0)
+}
+
+const sequenceTable = "CREATE TABLE ts (id bigint NOT NULL DEFAULT nextval('s1') PRIMARY KEY, x bigint);\n"
+
+// A sequence is created before the table that draws from it, with the
+// counter start a declaration states, and a changed start restarts the
+// counter. A default that draws from a sequence converges although Spanner
+// stores it as nextval('s1'::text); read without the cast, it would be set
+// again on every plan, as the built-in set it. A read writes the sequences
+// back with their counter starts, through the quoted catalog spelling.
+func TestHostCreatesRestartsAndDropsSequencesE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	const v1 = "CREATE SEQUENCE s1;\nCREATE SEQUENCE s2 START WITH 1000;\n" + sequenceTable
+	output, err := applySQL(c, address, v1)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "CREATE SEQUENCE \"s1\";\nCREATE SEQUENCE \"s2\" START COUNTER WITH 1000;\nCREATE TABLE \"ts\" (\n")
+	output, err = planSQL(c, address, v1)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+
+	output, err = hostCommand(c, "schema", "inspect", "--db-url", address, "--format", "hcl")
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "sequence \"s1\" {\n  schema = schema.public\n  type = \"bigint\"\n  start = 1\n}\n")
+	c.Assert(output, qt.Contains, "sequence \"s2\" {\n  schema = schema.public\n  type = \"bigint\"\n  start = 1000\n}\n")
+	output, err = hostCommand(c, "schema", "stats", "--db-url", address)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "ptah_schema_sequences{dialect=\"spanner\"} 2\n")
+
+	const v2 = "CREATE SEQUENCE s1;\nCREATE SEQUENCE s2 START WITH 5000;\nCREATE SEQUENCE s3;\n" + sequenceTable
+	output, err = applySQL(c, address, v2)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "CREATE SEQUENCE \"s3\";\nALTER SEQUENCE \"s2\" RESTART COUNTER WITH 5000;\n")
+	c.Assert(queryRows(c, address, `SELECT sequence_name, counter_start_value FROM "information_schema".sequences ORDER BY sequence_name`), qt.DeepEquals,
+		[]string{"s1 1", "s2 5000", "s3 1"})
+	output, err = planSQL(c, address, v2)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+
+	output, err = applySQL(c, address, "CREATE SEQUENCE s1;\n"+sequenceTable)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, "DROP SEQUENCE \"s2\";\nDROP SEQUENCE \"s3\";\n")
+	c.Assert(queryRows(c, address, `SELECT sequence_name FROM "information_schema".sequences ORDER BY sequence_name`), qt.DeepEquals, []string{"s1"})
+}
+
+// What Spanner cannot hold is refused before a statement is sent: a sequence
+// option other than its counter start, and a sequence that skips a range,
+// which the common sequence has no place for, is refused by the read rather
+// than left out of it.
+func TestHostRefusesViewsAndSequencesSpannerCannotHoldE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	output, err := planSQL(c, address, "CREATE SEQUENCE s INCREMENT BY 2;\nCREATE TABLE t (id bigint PRIMARY KEY);\n")
+	c.Assert(err, qt.IsNotNil)
+	c.Assert(output, qt.Contains, `sequence "s" declares INCREMENT, MINVALUE, MAXVALUE, CACHE or CYCLE: a Spanner sequence is bit-reversed and takes START COUNTER WITH alone`)
+
+	execSQL(c, address, `CREATE SEQUENCE skips BIT_REVERSED_POSITIVE SKIP RANGE 1 100`)
+	output, err = planSQL(c, address, "CREATE TABLE t (id bigint PRIMARY KEY);\n")
+	c.Assert(err, qt.IsNotNil)
+	c.Assert(output, qt.Contains, `sequence "public"."skips" skips a range of values, which the provider does not describe yet`)
+}

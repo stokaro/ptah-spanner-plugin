@@ -31,6 +31,7 @@ import (
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 )
@@ -42,13 +43,20 @@ const ServiceID = "spanner-tables"
 // assigns it the tables of the engine.
 func ParentKinds() []string { return []string{rowdeletion.Kind} }
 
+// ChangeKinds are the changes the service plans: a change of a kept table's
+// row deletion policy.
+func ChangeKinds() []string { return []string{rowdeletion.ChangeKind} }
+
 // The ranks order steps that nothing else orders: the host schedules ready
 // steps by owner and then by name, so a table's creation comes before an
-// index, and an index before a constraint, as Ptah's built-in Spanner engine
-// wrote them.
+// index, and an index before a constraint, and the column changes of every
+// table come before the row deletion policy changes, as Ptah's built-in
+// Spanner engine wrote them.
 const (
+	rankSchema     = "0-schema"
 	rankTable      = "1-table"
 	rankColumn     = "2-column"
+	rankPolicy     = "2-policy"
 	rankIndex      = "3-index"
 	rankConstraint = "4-constraint"
 )
@@ -72,6 +80,9 @@ type planner struct {
 	// keyDrops are the steps that drop a foreign key, which go before the
 	// removal of the tables they name.
 	keyDrops []keyDrop
+	// schemas is the step that creates each schema a created table names,
+	// other than the default one.
+	schemas map[string]*protocol.StepIdentity
 }
 
 // tableKey names a table by its schema and its name, which the engine
@@ -104,6 +115,7 @@ func Plan(ctx context.Context, request *protocol.PlanFeaturesRequest) (*protocol
 		created:      make(map[tableKey]*protocol.StepIdentity),
 		tables:       make(map[tableKey]*protocol.PlanningTable),
 		dropped:      make(map[tableKey]*protocol.StepIdentity),
+		schemas:      make(map[string]*protocol.StepIdentity),
 	}
 	for _, table := range request.GetTables() {
 		p.tables[keyOf(table.GetSubject())] = table
@@ -203,8 +215,14 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 	if err != nil {
 		return &refusal{table: index, code: protocol.PlanningDiagnostic_INVALID_SCHEMA, message: err.Error()}
 	}
+	if operation.RowDeletion, err = creationPolicy(table.GetSubject(), desired); err != nil {
+		return &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: err.Error()}
+	}
 	step, err := p.replace(index, common, rankTable, operation, protocol.NativeOperation_STATEMENT)
 	if err != nil {
+		return err
+	}
+	if err := p.createSchema(index, table.GetSubject(), step); err != nil {
 		return err
 	}
 	p.created[keyOf(table.GetSubject())] = step
@@ -220,6 +238,33 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 		}
 		p.depend(step, id)
 	}
+	return nil
+}
+
+// createSchema adds the step that creates the schema a created table names,
+// once per schema, before the table's creation: Spanner refuses a table in a
+// schema that does not exist (`Schema not found`). A table in the default
+// schema needs none. The statement is CREATE SCHEMA IF NOT EXISTS, as Ptah's
+// built-in Spanner engine wrote it, because the read a plan is made from may
+// cover only the schemas a URL selects and so cannot say whether the schema
+// is there.
+func (p *planner) createSchema(index int, subject *protocol.ComparisonIdentity, creation *protocol.StepIdentity) error {
+	schema := subject.GetSchema().GetSource()
+	if schema == "" || schema == ddl.DefaultSchema {
+		return nil
+	}
+	step, found := p.schemas[schema]
+	if !found {
+		namespace := &protocol.ComparisonIdentity{Kind: "schema", Database: proto.CloneOf(subject.GetDatabase()), Catalog: proto.CloneOf(subject.GetCatalog()),
+			Name: proto.CloneOf(subject.GetSchema())}
+		var err error
+		if step, err = p.add(index, subject, rankSchema, tableop.Operation{Action: tableop.CreateSchema, Name: schema}, nil,
+			effect(namespace, protocol.PlanningEffect_CREATE)); err != nil {
+			return err
+		}
+		p.schemas[schema] = step
+	}
+	p.depend(step, creation)
 	return nil
 }
 
@@ -291,8 +336,8 @@ func (p *planner) drop(index int, table *protocol.PlanningTable) error {
 
 // alter plans a table the plan keeps: it claims the host's steps that add
 // and drop its columns and indexes, and adds a step for each change of a
-// column's type, default and nullability and of its foreign keys and CHECKs.
-// A change of the primary key is refused.
+// column's type, default and nullability, of its foreign keys and CHECKs and
+// of the table's row deletion policy. A change of the primary key is refused.
 func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 	desired, current := table.GetDesired(), table.GetCurrent()
 	if desired == nil || current == nil {
@@ -316,6 +361,10 @@ func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 	if err != nil {
 		return err
 	}
+	policies, err := p.policyChanges(index, table)
+	if err != nil {
+		return err
+	}
 	columns := slices.Concat(changed, claimed.columnAdditions)
 	// A constraint is dropped before any column of its table changes,
 	// because Spanner refuses to drop a column a constraint names (`Cannot
@@ -329,6 +378,16 @@ func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 	for _, addition := range added {
 		for _, step := range columns {
 			p.depend(step, addition)
+		}
+	}
+	// A policy changes after the columns it may count from are added and
+	// before the column it counted from is dropped.
+	for _, step := range policies {
+		for _, addition := range claimed.columnAdditions {
+			p.depend(addition, step)
+		}
+		for _, removal := range claimed.columnRemovals {
+			p.depend(step, removal)
 		}
 	}
 	// A column changes after the indexes it may lose are gone and before the
@@ -390,6 +449,9 @@ func (p *planner) claimAlteration(index int, table *protocol.PlanningTable, comm
 		target := change.GetSubject()
 		switch {
 		case target.GetKind() == "column" && change.GetAction() == protocol.PlanningEffect_DROP:
+			if err := p.heldPolicyColumn(index, table, target.GetName().GetSource()); err != nil {
+				return nil, "", err
+			}
 			step, err := p.replace(index, common, rankColumn, tableop.Operation{Action: tableop.DropColumn, Name: target.GetName().GetSource()}, protocol.NativeOperation_ALTER_TABLE)
 			return step, "column-removal", err
 		case target.GetKind() == "index" && change.GetAction() == protocol.PlanningEffect_DROP:
@@ -540,7 +602,7 @@ func (p *planner) add(index int, subject *protocol.ComparisonIdentity, rank stri
 	}
 	role := protocol.NativeOperation_ALTER_TABLE
 	switch operation.Action {
-	case tableop.CreateIndex, tableop.DropIndex:
+	case tableop.CreateIndex, tableop.DropIndex, tableop.CreateSchema:
 		role = protocol.NativeOperation_STATEMENT
 	}
 	metadata := &protocol.PlanningMetadata{Transaction: protocol.PlanningMetadata_FORBIDDEN, Effects: effects,

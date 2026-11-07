@@ -84,6 +84,23 @@ func (k IndexKey) StatedNulls() string {
 	return nulls
 }
 
+// TTL is a table's row deletion policy: Spanner deletes a row once Interval
+// has passed since the timestamp Column holds.
+type TTL struct {
+	Column   string
+	Interval string
+}
+
+// clause writes the policy as CREATE TABLE writes it after its column list,
+// and as ADD TTL and ALTER TTL take it: `TTL INTERVAL '30 days' ON "c"`. The
+// interval is written as declared.
+func (t TTL) clause() (string, error) {
+	if t.Column == "" || strings.TrimSpace(t.Interval) == "" {
+		return "", fmt.Errorf("a row deletion policy names its column and its interval")
+	}
+	return "TTL INTERVAL '" + strings.ReplaceAll(t.Interval, "'", "''") + "' ON " + Quote(t.Column), nil
+}
+
 // Quote writes a name as a double-quoted identifier, which the PostgreSQL
 // interface resolves by its exact spelling.
 func Quote(name string) string {
@@ -99,11 +116,13 @@ func Name(schema, name string) string {
 	return Quote(schema) + "." + Quote(name)
 }
 
-// CreateTable writes CREATE TABLE for columns and a primary key in key order.
-// A single key column carries PRIMARY KEY NOT NULL in its definition, and a
-// composite key is a PRIMARY KEY clause after the columns, as Ptah's built-in
-// Spanner engine wrote them. Spanner makes every key column NOT NULL.
-func CreateTable(schema, name string, columns []Column, primaryKey []string) (string, error) {
+// CreateTable writes CREATE TABLE for columns, a primary key in key order
+// and a row deletion policy, nil for none. A single key column carries
+// PRIMARY KEY NOT NULL in its definition, and a composite key is a PRIMARY
+// KEY clause after the columns, as Ptah's built-in Spanner engine wrote them.
+// Spanner makes every key column NOT NULL. The policy follows the column
+// list.
+func CreateTable(schema, name string, columns []Column, primaryKey []string, ttl *TTL) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("a table has no name")
 	}
@@ -139,7 +158,51 @@ func CreateTable(schema, name string, columns []Column, primaryKey []string) (st
 	if len(primaryKey) > 1 {
 		definitions = append(definitions, "PRIMARY KEY ("+quoteAll(primaryKey)+")")
 	}
-	return "CREATE TABLE " + Name(schema, name) + " (\n  " + strings.Join(definitions, ",\n  ") + "\n);", nil
+	suffix := ""
+	if ttl != nil {
+		if !seen[ttl.Column] {
+			return "", fmt.Errorf("table %s names row deletion column %q, which it does not declare", Name(schema, name), ttl.Column)
+		}
+		clause, err := ttl.clause()
+		if err != nil {
+			return "", fmt.Errorf("table %s: %w", Name(schema, name), err)
+		}
+		suffix = " " + clause
+	}
+	return "CREATE TABLE " + Name(schema, name) + " (\n  " + strings.Join(definitions, ",\n  ") + "\n)" + suffix + ";", nil
+}
+
+// AddTTL writes ALTER TABLE ... ADD TTL, which gives a table without a policy
+// one. Spanner refuses it on a table that has a policy, and ALTER TTL on one
+// that has none, so the caller picks by what the table holds.
+func AddTTL(schema, table string, ttl TTL) (string, error) {
+	clause, err := ttl.clause()
+	if err != nil {
+		return "", fmt.Errorf("table %s: %w", Name(schema, table), err)
+	}
+	return "ALTER TABLE " + Name(schema, table) + " ADD " + clause + ";", nil
+}
+
+// AlterTTL writes ALTER TABLE ... ALTER TTL, which replaces a table's policy.
+func AlterTTL(schema, table string, ttl TTL) (string, error) {
+	clause, err := ttl.clause()
+	if err != nil {
+		return "", fmt.Errorf("table %s: %w", Name(schema, table), err)
+	}
+	return "ALTER TABLE " + Name(schema, table) + " ALTER " + clause + ";", nil
+}
+
+// DropTTL writes ALTER TABLE ... DROP TTL. It names no column: the policy goes
+// and the column stays.
+func DropTTL(schema, table string) string {
+	return "ALTER TABLE " + Name(schema, table) + " DROP TTL;"
+}
+
+// CreateSchema writes CREATE SCHEMA IF NOT EXISTS, as Ptah's built-in Spanner
+// engine wrote it before a table in a schema of its own: a plan creates the
+// schema a new table names whether or not an earlier run created it.
+func CreateSchema(name string) string {
+	return "CREATE SCHEMA IF NOT EXISTS " + Quote(name) + ";"
 }
 
 // DropTable writes DROP TABLE. Spanner has one drop mode and refuses CASCADE,

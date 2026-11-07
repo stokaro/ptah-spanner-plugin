@@ -147,8 +147,15 @@ func (p *Provider) ReadSeedLedger(ctx context.Context, request *protocol.ReadSee
 // runSeed makes sure the ledger exists, then runs the statements of a seed
 // file, none for RecordSeed, and its ledger entry in one transaction, again
 // when Spanner aborts the transaction for a conflict, at most seedAttempts
-// times. The caller holds the session's mutex.
+// times. A session with an open transaction runs no seed. The caller holds the
+// session's mutex.
 func (s *session) runSeed(ctx context.Context, result *protocol.SeedResult, seed *protocol.Seed, statements []seedfile.Statement) *protocol.SeedResult {
+	if s.active != "" {
+		// A seed runs in a transaction of its own and cannot join the
+		// session's open one, so it waits for that one to end rather than
+		// commit beside it.
+		return seedOutcome(result, protocol.SeedResult_NOT_APPLIED, "the session has an open transaction; finish it before running a seed; nothing ran")
+	}
 	if !s.guard(ctx) {
 		return seedOutcome(result, protocol.SeedResult_NOT_APPLIED, "the session lost a lock it held; nothing ran")
 	}

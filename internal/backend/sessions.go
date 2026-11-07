@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"maps"
 
 	"github.com/jackc/pgx/v5"
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
@@ -12,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/address"
+	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 )
 
 // sessionCapabilities are the host capabilities a session states. A present
@@ -31,16 +33,21 @@ import (
 // Spanner table's storage layout, so changing it is refused, and a column
 // rename answers `Only <TABLE> is supported for renaming`.
 //
+// The views and sequences the session carries add their own; see
+// commonobject.Capabilities.
+//
 // Each was measured on the emulator behind PGAdapter by Ptah's built-in
 // Spanner engine and is restated here because the provider plans with it.
 func sessionCapabilities() map[string]bool {
-	return map[string]bool{
+	capabilities := map[string]bool{
 		"transactional_ddl":      false,
 		"ddl_inside_transaction": false,
 		"unique_constraints":     false,
 		"primary_key_alterable":  false,
 		"rename_column_clause":   false,
 	}
+	maps.Copy(capabilities, commonobject.Capabilities())
+	return capabilities
 }
 
 // Open connects to the database the address names and returns a session bound
@@ -120,6 +127,7 @@ func (p *Provider) Close(ctx context.Context, request *protocol.CloseRequest) er
 	defer found.mu.Unlock()
 	found.rollbackTransactions(ctx)
 	found.readers = nil
+	found.results = nil
 	found.lockMu.Lock()
 	defer found.lockMu.Unlock()
 	if errors.Join(found.releaseLocks(ctx), found.conn.Close(ctx)) != nil {

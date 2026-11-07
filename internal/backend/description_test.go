@@ -87,6 +87,15 @@ func TestDescription_MigrationsKeepTheirRecords(t *testing.T) {
 	}
 }
 
+// The statements an operator writes, such as a migration's check assertions,
+// run through the provider.
+func TestDescription_RunsOperatorStatements(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	c.Assert(description.GetEngines()[0].GetFeatures(), qt.Contains, provider.StatementsFeature)
+	c.Assert(description.GetFeatures(), qt.Contains, provider.StatementsFeature)
+}
+
 // The only line runs on the emulator in CI and stays best effort, because
 // the emulator is not the managed service.
 func TestDescription_TheLineIsBestEffortOnTheEmulator(t *testing.T) {
@@ -111,4 +120,18 @@ func TestServer_RefusesAServiceTheServerLacks(t *testing.T) {
 	server := backend.Server()
 	server.Description.Features = append(server.Description.Features, provider.EmbeddingStoreFeature)
 	c.Assert(server.Validate(), qt.ErrorIs, provider.ErrProtocol)
+}
+
+// The provider empties a dev database the host names and judges what a
+// replay runs on one; it provisions none, because a Spanner database is
+// created through the instance's administration API.
+func TestDescription_TheProviderCleansDevDatabases(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	engine := description.GetEngines()[0]
+	for _, feature := range []string{provider.DevCleanupFeature, provider.ReplayGuardFeature} {
+		c.Assert(engine.GetFeatures(), qt.Contains, feature)
+		c.Assert(description.GetFeatures(), qt.Contains, feature)
+	}
+	c.Assert(description.GetFeatures(), qt.Not(qt.Contains), provider.DevDatabaseFeature)
 }

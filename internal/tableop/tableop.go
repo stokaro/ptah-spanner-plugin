@@ -60,6 +60,15 @@ const (
 	AddForeignKey   Action = "add-foreign-key"
 	AddCheck        Action = "add-check"
 	DropConstraint  Action = "drop-constraint"
+	// AddRowDeletion gives a table without a row deletion policy one,
+	// AlterRowDeletion replaces a table's policy, and DropRowDeletion
+	// removes it. Spanner refuses each verb in another's place.
+	AddRowDeletion   Action = "add-row-deletion"
+	AlterRowDeletion Action = "alter-row-deletion"
+	DropRowDeletion  Action = "drop-row-deletion"
+	// CreateSchema creates the schema a created table names, unless it
+	// exists.
+	CreateSchema Action = "create-schema"
 )
 
 // Operation is one action on the table its envelope names. Each action reads
@@ -87,6 +96,17 @@ type Operation struct {
 	Index *Index `json:"index,omitempty"`
 	// ForeignKey is the constraint an add-foreign-key adds.
 	ForeignKey *ForeignKey `json:"foreignKey,omitempty"`
+	// RowDeletion is the row deletion policy a create-table gives its table,
+	// or the one an add-row-deletion or alter-row-deletion sets.
+	RowDeletion *RowDeletion `json:"rowDeletion,omitempty"`
+}
+
+// RowDeletion is a table's row deletion policy: Spanner deletes a row once
+// the interval has passed since the timestamp the column holds. The interval
+// is written as declared.
+type RowDeletion struct {
+	Column   string `json:"column"`
+	Interval string `json:"interval"`
 }
 
 // Column is a column of a create-table or an add-column.
@@ -139,18 +159,21 @@ func buildModel() *protocol.ValueModel {
 		"kind": Kind, "representation": "operation", "schema_version": schemaVersion, "encoding": encoding,
 		"owner": "the table the statement changes: engine spanner, kind table, its schema and its name; no database, catalog or path",
 		"actions": []Action{CreateTable, DropTable, AddColumn, DropColumn, AlterColumnType, SetDefault, DropDefault, SetNotNull, DropNotNull,
-			CreateIndex, DropIndex, AddForeignKey, AddCheck, DropConstraint},
+			CreateIndex, DropIndex, AddForeignKey, AddCheck, DropConstraint, AddRowDeletion, AlterRowDeletion, DropRowDeletion, CreateSchema},
 		"fields": map[string]string{
 			"action":     "required; one schema statement of Spanner's PostgreSQL interface",
 			"columns":    "create-table: every column in order, each with name, type as declared, nullable, an optional default as SQL and an optional named check",
 			"primaryKey": "create-table: the key columns in key order",
 			"column":     "add-column: one column, nullable or with a default and without a check",
-			"name":       "the column an alter, drop-column or drop-default names, the index a drop-index drops, the constraint an add-check adds or a drop-constraint drops",
+			"name": "the column an alter, drop-column or drop-default names, the index a drop-index drops, the constraint an add-check adds " +
+				"or a drop-constraint drops, the schema a create-schema creates",
 			"type":       "alter-column-type: the type as declared; Spanner changes a type only between character varying and bytea",
 			"default":    "set-default: the SQL that follows DEFAULT",
 			"expression": "add-check: the condition",
 			"index":      "create-index: name, unique, ordered keys with direction and NULLS ordering, and the stored columns",
 			"foreignKey": "add-foreign-key: name, columns, the referenced schema, table and columns, and ON DELETE CASCADE or none",
+			"rowDeletion": "create-table, add-row-deletion and alter-row-deletion: the row deletion policy's column and its interval as declared; " +
+				"drop-row-deletion takes none",
 		},
 		"execution": "one statement outside a transaction; the statement commits as it runs",
 	})
@@ -255,20 +278,24 @@ func Statement(captured *protocol.NormalizedValue) (string, error) {
 
 // fields lists the operands an action reads.
 var fields = map[Action][]string{
-	CreateTable:     {"columns", "primaryKey"},
-	DropTable:       {},
-	AddColumn:       {"column"},
-	DropColumn:      {"name"},
-	AlterColumnType: {"name", "type"},
-	SetDefault:      {"name", "default"},
-	DropDefault:     {"name"},
-	SetNotNull:      {"name"},
-	DropNotNull:     {"name"},
-	CreateIndex:     {"index"},
-	DropIndex:       {"name"},
-	AddForeignKey:   {"foreignKey"},
-	AddCheck:        {"name", "expression"},
-	DropConstraint:  {"name"},
+	CreateTable:      {"columns", "primaryKey", "rowDeletion"},
+	DropTable:        {},
+	AddColumn:        {"column"},
+	DropColumn:       {"name"},
+	AlterColumnType:  {"name", "type"},
+	SetDefault:       {"name", "default"},
+	DropDefault:      {"name"},
+	SetNotNull:       {"name"},
+	DropNotNull:      {"name"},
+	CreateIndex:      {"index"},
+	DropIndex:        {"name"},
+	AddForeignKey:    {"foreignKey"},
+	AddCheck:         {"name", "expression"},
+	DropConstraint:   {"name"},
+	AddRowDeletion:   {"rowDeletion"},
+	AlterRowDeletion: {"rowDeletion"},
+	DropRowDeletion:  {},
+	CreateSchema:     {"name"},
 }
 
 // present lists the operands an operation sets.
@@ -277,6 +304,7 @@ func (o Operation) present() []string {
 	for name, set := range map[string]bool{
 		"columns": len(o.Columns) != 0, "primaryKey": len(o.PrimaryKey) != 0, "column": o.Column != nil, "name": o.Name != "", "type": o.Type != "",
 		"default": o.Default != "", "expression": o.Expression != "", "index": o.Index != nil, "foreignKey": o.ForeignKey != nil,
+		"rowDeletion": o.RowDeletion != nil,
 	} {
 		if set {
 			names = append(names, name)
@@ -304,9 +332,13 @@ func (o Operation) statement(schema, table string) (string, error) {
 		for i, column := range o.Columns {
 			columns[i] = column.ddl()
 		}
-		return ddl.CreateTable(schema, table, columns, o.PrimaryKey)
+		return ddl.CreateTable(schema, table, columns, o.PrimaryKey, o.RowDeletion.ddl())
 	case DropTable:
 		return ddl.DropTable(schema, table), nil
+	case AddRowDeletion, AlterRowDeletion:
+		return o.rowDeletionStatement(schema, table)
+	case DropRowDeletion:
+		return ddl.DropTTL(schema, table), nil
 	case AddColumn:
 		if o.Column == nil {
 			return "", fmt.Errorf("an add-column operation names no column")
@@ -324,6 +356,18 @@ func (o Operation) statement(schema, table string) (string, error) {
 		return ddl.AddForeignKey(schema, table, o.ForeignKey.ddl())
 	}
 	return o.namedStatement(schema, table)
+}
+
+// rowDeletionStatement writes the ADD TTL or ALTER TTL of an
+// add-row-deletion or alter-row-deletion.
+func (o Operation) rowDeletionStatement(schema, table string) (string, error) {
+	if o.RowDeletion == nil {
+		return "", fmt.Errorf("a %s operation names no row deletion policy", o.Action)
+	}
+	if o.Action == AddRowDeletion {
+		return ddl.AddTTL(schema, table, *o.RowDeletion.ddl())
+	}
+	return ddl.AlterTTL(schema, table, *o.RowDeletion.ddl())
 }
 
 // namedStatement writes the SQL of an action that names one column, index or
@@ -349,6 +393,8 @@ func (o Operation) namedStatement(schema, table string) (string, error) {
 		return ddl.DropIndex(schema, o.Name), nil
 	case DropConstraint:
 		return ddl.DropConstraint(schema, table, o.Name), nil
+	case CreateSchema:
+		return ddl.CreateSchema(o.Name), nil
 	default:
 		return ddl.AddCheck(schema, table, o.Name, o.Expression)
 	}
@@ -380,6 +426,12 @@ func (o Operation) impact() (protocol.ChangeSemantics_Impact, string) {
 		return protocol.ChangeSemantics_BEHAVIORAL, "Drops a foreign key or CHECK constraint; Spanner stops enforcing it, and no row changes"
 	case CreateTable:
 		return protocol.ChangeSemantics_ADDITIVE, "Creates a table"
+	case CreateSchema:
+		return protocol.ChangeSemantics_ADDITIVE, "Creates a schema"
+	case AddRowDeletion, AlterRowDeletion:
+		return protocol.ChangeSemantics_BEHAVIORAL, "Sets a row deletion policy; Spanner deletes the rows older than its interval"
+	case DropRowDeletion:
+		return protocol.ChangeSemantics_ADDITIVE, "Removes a row deletion policy; Spanner stops deleting rows"
 	case AddColumn:
 		return protocol.ChangeSemantics_ADDITIVE, "Adds a column"
 	default:
@@ -389,6 +441,14 @@ func (o Operation) impact() (protocol.ChangeSemantics_Impact, string) {
 
 func (c Column) ddl() ddl.Column {
 	return ddl.Column{Name: c.Name, Type: c.Type, Nullable: c.Nullable, Default: c.Default, Check: c.Check, CheckName: c.CheckName}
+}
+
+// ddl is the policy as ddl writes it, nil for none.
+func (r *RowDeletion) ddl() *ddl.TTL {
+	if r == nil {
+		return nil
+	}
+	return &ddl.TTL{Column: r.Column, Interval: r.Interval}
 }
 
 func (i Index) ddl() ddl.Index {

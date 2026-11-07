@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 )
 
@@ -36,9 +37,12 @@ func (*Provider) Render(ctx context.Context, request *protocol.RenderRequest) (*
 // operation's owner is its table; an ALTER_TABLE operation names the same
 // table as its parent.
 func renderChange(change *protocol.Change) (string, error) {
+	if common := change.GetCommonObject(); common != nil {
+		return commonobject.Render(common)
+	}
 	native := change.GetNative()
 	if native == nil {
-		return "", refusal("the provider renders the table operations it plans and nothing else")
+		return "", refusal("the provider renders the table operations it plans, views and sequences, and nothing else")
 	}
 	owner := native.GetValue().GetValue().GetOwner()
 	switch native.GetRole() {

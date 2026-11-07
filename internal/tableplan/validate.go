@@ -48,9 +48,6 @@ func validateTable(subject *protocol.ComparisonIdentity, table *protocol.Declare
 		problems = append(problems, unsupported("primary key", name, "the primary key of table %s states INCLUDE, a method or deferral; a Spanner key has none", name))
 	case strings.TrimSpace(table.GetCustomSql()) != "" || len(table.GetTriggers()) > 0:
 		problems = append(problems, unsupported("table", name, "table %s carries custom SQL or a trigger, which Spanner has no place for", name))
-	case len(primaryKey(table)) == 0:
-		problems = append(problems, unsupported("primary key", name,
-			"table %s declares no primary key; Spanner gives such a table a hidden key column, which the provider does not describe", name))
 	}
 	for _, part := range table.GetPrimaryKeyParts() {
 		if part.GetDescending() || part.GetPrefix() != "" {
@@ -65,6 +62,17 @@ func validateTable(subject *protocol.ComparisonIdentity, table *protocol.Declare
 			problems = append(problems, unsupported("index", index.GetName(), "index %q of table %s %s", index.GetName(), name, reason))
 		}
 	}
+	return append(problems, validateTableParts(subject, table, tables)...)
+}
+
+// validateTableParts checks what a declared table holds beside its columns
+// and indexes: its constraints, its foreign keys and its row deletion policy.
+func validateTableParts(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTable, tables map[tableKey]*protocol.DeclaredTable) []Problem {
+	name := phrase(subject)
+	unsupported := func(kind, object, format string, args ...any) Problem {
+		return Problem{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: kind, Object: object, Message: fmt.Sprintf(format, args...)}
+	}
+	var problems []Problem
 	for _, constraint := range table.GetConstraints() {
 		switch strings.ToUpper(constraint.GetType()) {
 		case "FOREIGN KEY", "CHECK", "PRIMARY KEY", "UNIQUE":
@@ -75,6 +83,9 @@ func validateTable(subject *protocol.ComparisonIdentity, table *protocol.Declare
 	}
 	if _, err := tableChecks(subject, table); err != nil {
 		problems = append(problems, unsupported("constraint", name, "%v", err))
+	}
+	if _, err := creationPolicy(subject, table); err != nil {
+		problems = append(problems, unsupported("row deletion policy", name, "%v", err))
 	}
 	return append(problems, validateForeignKeys(subject, table, tables)...)
 }

@@ -148,10 +148,10 @@ func TestReadOnly_HappyPath(t *testing.T) {
 
 func TestReadOnly_FailurePath(t *testing.T) {
 	tests := []struct{ name, assertion, reason string }{
-		{name: "two statements", assertion: "SELECT 1; SELECT 2", reason: "the assertion is not exactly one statement"},
-		{name: "no statement", assertion: "-- empty", reason: "the assertion is not exactly one statement"},
-		{name: "a change", assertion: "DELETE FROM t", reason: "the assertion is not a query that only reads rows"},
-		{name: "a change in a query", assertion: "WITH d AS (DELETE FROM t RETURNING id) SELECT * FROM d", reason: "the assertion changes rows"},
+		{name: "two statements", assertion: "SELECT 1; SELECT 2", reason: "the text is not exactly one statement"},
+		{name: "no statement", assertion: "-- empty", reason: "the text is not exactly one statement"},
+		{name: "a change", assertion: "DELETE FROM t", reason: "the statement is not a query that only reads rows"},
+		{name: "a change in a query", assertion: "WITH d AS (DELETE FROM t RETURNING id) SELECT * FROM d", reason: "the statement changes rows"},
 		{name: "unreadable", assertion: "SELECT $$x$$", reason: migrationunits.LexingReason},
 	}
 	for _, test := range tests {

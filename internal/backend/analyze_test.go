@@ -53,8 +53,8 @@ func TestAnalyzeSQL_FailurePath(t *testing.T) {
 	}{
 		{name: "another engine", request: &protocol.AnalyzeSQLRequest{Engine: "postgres", Sources: []string{"DROP TABLE t;"}},
 			wantErr: `.*the provider analyzes the SQL of the spanner engine only.*`},
-		{name: "a statement the provider does not know", request: &protocol.AnalyzeSQLRequest{Engine: "spanner", Sources: []string{"DROP TABLE t;", "CREATE VIEW v AS SELECT 1;"}},
-			wantErr: `.*the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX, ALTER TABLE .*, INSERT, UPDATE, DELETE and SELECT only`},
+		{name: "a statement the provider does not know", request: &protocol.AnalyzeSQLRequest{Engine: "spanner", Sources: []string{"DROP TABLE t;", "CREATE SCHEMA app;"}},
+			wantErr: `.*the provider analyzes CREATE and DROP of a TABLE, an INDEX, a VIEW or a SEQUENCE, .*`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -142,7 +142,6 @@ func TestValidateSchema(t *testing.T) {
 		messages[i] = diagnostic.GetMessage()
 	}
 	c.Assert(messages, qt.DeepEquals, []string{
-		`table "keyless" declares no primary key; Spanner gives such a table a hidden key column, which the provider does not describe`,
 		`column "n" of table "typed": type "int4": Spanner stores integers as bigint only`,
 		`column "id" of table "serial" is an identity column, which the provider does not describe yet`,
 		`index "f" of table "filtered" has a WHERE filter, which the provider does not create yet`,

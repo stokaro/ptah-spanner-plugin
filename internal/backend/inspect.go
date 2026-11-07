@@ -13,18 +13,21 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/catalog"
+	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-spanner-plugin/internal/history"
 	"github.com/stokaro/ptah-spanner-plugin/internal/locktable"
 	"github.com/stokaro/ptah-spanner-plugin/internal/metadata"
 	"github.com/stokaro/ptah-spanner-plugin/internal/ownedtable"
+	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 )
 
 // Inspect reads the base tables of the requested schemas, or of the default
 // schema when the request names none, with their columns, primary keys,
-// secondary indexes, and foreign keys and CHECKs where the host negotiated
-// them. The snapshot is complete or the call fails: an object the provider
-// does not describe yet, or a constraint a host that did not negotiate them
-// would miss, fails the read with a reason.
+// secondary indexes and row deletion policies, foreign keys and CHECKs where
+// the host negotiated them, and the views and sequences of those schemas. The
+// snapshot is complete or the call fails: an object the provider does not
+// describe yet, or a constraint a host that did not negotiate them would
+// miss, fails the read with a reason.
 func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest) (*protocol.Schema, error) {
 	current, err := p.lookup(request.GetSessionId())
 	if err != nil {
@@ -52,11 +55,12 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		TargetFeatures: negotiatedFeatures(ctx),
 		Coverage:       &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
 	}
+	snapshot.Coverage.Kinds = []*protocol.ModelKindCoverage{policyCoverage(current.database, request.GetSchemas())}
 	constraints := slices.Contains(snapshot.GetTargetFeatures(), provider.ObservedConstraintsFeature)
 	for _, table := range tables {
 		if held := table.Constraints; !constraints && len(held) > 0 {
 			return nil, runtime.ErrorWithReason(codes.FailedPrecondition, fmt.Sprintf(
-				"table %q.%q has the %s constraint %q, which the provider reports only to a host that reads constraints (contract 25.28)",
+				"table %q.%q has the %s constraint %q, which needs a host that reads constraints (schema.observed-constraints)",
 				table.Schema, table.Name, held[0].Type, held[0].Name))
 		}
 		if purpose := reservedPurpose(table); purpose != protocol.ReservedObject_PURPOSE_UNSPECIFIED {
@@ -66,7 +70,21 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 			})
 			continue
 		}
-		snapshot.Tables = append(snapshot.Tables, observedTable(current.database, table))
+		observed := observedTable(current.database, table)
+		if table.RowDeletion != nil {
+			facet, err := rowdeletion.Facet("policy."+table.Schema+"."+table.Name, protocol.ValueInput_OBSERVED, proto.CloneOf(observed.GetIdentity()), *table.RowDeletion)
+			if err != nil {
+				return nil, runtime.ErrorWithReason(codes.FailedPrecondition, fmt.Sprintf("table %s: %v", qualifiedName(table), err))
+			}
+			observed.Facets = append(observed.Facets, facet.GetValue())
+			snapshot.Coverage.Subjects = append(snapshot.Coverage.Subjects, &protocol.ModelSubjectCoverage{Kind: rowdeletion.Kind,
+				Subject: proto.CloneOf(observed.GetIdentity()), NormalizedSubject: proto.CloneOf(observed.GetNormalizedIdentity()),
+				Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE}})
+		}
+		snapshot.Tables = append(snapshot.Tables, observed)
+	}
+	if snapshot.CommonObjects, err = commonObjects(ctx, current, schemas); err != nil {
+		return nil, err
 	}
 	// A read narrowed to schemas says which namespace each selector names.
 	for _, selector := range request.GetSchemas() {
@@ -174,4 +192,85 @@ func lockTable(table catalog.Table) bool {
 		}
 	}
 	return true
+}
+
+// policyCoverage says what the read knows of row deletion policies: every
+// table's, so a table without a policy holds none. A read narrowed to schemas
+// knows them inside those schemas alone.
+func policyCoverage(database string, schemas []string) *protocol.ModelKindCoverage {
+	coverage := &protocol.ModelKindCoverage{Model: rowdeletion.ObservedModel(), Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE}}
+	if len(schemas) == 0 {
+		return coverage
+	}
+	coverage.Knowledge = &protocol.ModelKnowledge{State: protocol.ModelKnowledge_UNINSPECTED, Reason: "The read covers the selected schemas only"}
+	for _, schema := range slices.Compact(slices.Sorted(slices.Values(schemas))) {
+		coverage.Regions = append(coverage.Regions, &protocol.ModelNamespaceKnowledge{
+			Scope: &protocol.ModelNamespace{
+				Database: &protocol.NamespaceComponent{Source: database, Normalized: database},
+				Catalog:  &protocol.NamespaceComponent{},
+				Schema:   &protocol.NamespaceComponent{Source: schema, Normalized: schema},
+			},
+			Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE},
+		})
+	}
+	return coverage
+}
+
+// qualifiedName names a read table for a reason.
+func qualifiedName(table catalog.Table) string {
+	return fmt.Sprintf("%q.%q", table.Schema, table.Name)
+}
+
+// commonObjects reads the views and sequences of the schemas the read covers,
+// each kind completely: a view or a sequence the read does not report does
+// not exist in those schemas. A host that does not carry common objects gets
+// none, and a read that holds one is refused for it rather than left
+// without it: the host would plan as if the object did not exist.
+func commonObjects(ctx context.Context, current *session, schemas []string) (*protocol.ObservedCommonObjects, error) {
+	views, err := catalog.ReadViews(ctx, current.conn, schemas)
+	if err == nil {
+		var sequences []catalog.Sequence
+		if sequences, err = catalog.ReadSequences(ctx, current.conn, schemas); err == nil {
+			if slices.Contains(provider.HostFeatures(ctx), provider.CommonObjectsFeature) {
+				return observedCommonObjects(current.database, views, sequences), nil
+			}
+			err = uncarried(views, sequences)
+		}
+	}
+	if err == nil {
+		return nil, nil
+	}
+	if unsupported, found := errors.AsType[*catalog.Unsupported](err); found {
+		return nil, runtime.ErrorWithReason(codes.FailedPrecondition, unsupported.Reason)
+	}
+	return nil, callFailed(ctx, "the provider could not read the Spanner catalog")
+}
+
+func observedCommonObjects(database string, views []catalog.View, sequences []catalog.Sequence) *protocol.ObservedCommonObjects {
+	result := &protocol.ObservedCommonObjects{Coverage: []*protocol.CommonObjectCoverage{
+		{Kind: protocol.CommonObjectSupport_VIEW, Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE}},
+		{Kind: protocol.CommonObjectSupport_SEQUENCE, Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE}},
+	}}
+	for _, view := range views {
+		result.Views = append(result.Views, &protocol.ObservedView{Body: view.Definition,
+			Identity: &protocol.Reference{Engine: engineID, Database: database, Schema: view.Schema, Kind: "view", Name: view.Name}})
+	}
+	for _, sequence := range sequences {
+		result.Sequences = append(result.Sequences, &protocol.ObservedSequence{DataType: commonobject.SequenceType, Start: sequence.CounterStart,
+			Identity: &protocol.Reference{Engine: engineID, Database: database, Schema: sequence.Schema, Kind: "sequence", Name: sequence.Name}})
+	}
+	return result
+}
+
+// uncarried refuses a read that holds a view or a sequence for a host that
+// does not carry common objects.
+func uncarried(views []catalog.View, sequences []catalog.Sequence) error {
+	const reason = "%s %q.%q needs a host that carries views and sequences (%s)"
+	switch {
+	case len(views) > 0:
+		return &catalog.Unsupported{Reason: fmt.Sprintf(reason, "view", views[0].Schema, views[0].Name, provider.CommonObjectsFeature)}
+	case len(sequences) > 0:
+		return &catalog.Unsupported{Reason: fmt.Sprintf(reason, "sequence", sequences[0].Schema, sequences[0].Name, provider.CommonObjectsFeature)}
+	}
+	return nil
 }

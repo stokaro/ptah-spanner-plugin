@@ -24,19 +24,37 @@ is evidence about the PostgreSQL interface, not about the managed service.
 - **Reads.** A read describes the base tables of the requested schemas, or of
   `public` when the request names none: every column with the type Spanner
   stores, its nullability and its stored default, the primary key in key order,
-  and the secondary indexes with each key's direction and NULLS ordering and
-  their `STORING` columns. The index Spanner builds for a foreign key is
+  the secondary indexes with each key's direction and NULLS ordering and
+  their `STORING` columns, and the row deletion policy with the interval in
+  the spelling Spanner stored. The index Spanner builds for a foreign key is
   Spanner's, not the user's, and is left out.
+- **Views and sequences.** A read reports each view with its query as Spanner
+  stores it, and each sequence with its counter start. A view is created with
+  `CREATE VIEW`, replaced with `CREATE OR REPLACE VIEW` and dropped with `DROP
+  VIEW`; a declared query converges whatever its case, spacing and quoting,
+  but a condition Spanner rewrites (`WHERE id > 0` reads back as `WHERE (id >
+  '0'::bigint)`) is replaced on every plan until it is declared in the stored
+  spelling. A sequence takes `START COUNTER WITH` alone: a changed start is
+  `ALTER SEQUENCE ... RESTART COUNTER WITH`, and any other option is refused.
+  A default `nextval('s')` converges with the `nextval('s'::text)` Spanner
+  stores. A sequence that skips a range is refused by the read.
 - **Refusals instead of omissions.** A read fails, with a reason that names the
   object, when the schema holds something the provider does not describe yet:
-  a view, a foreign key or CHECK constraint, a row deletion policy, a generated
-  or identity column (Spanner adds a hidden `rowid` identity column to a table
-  created without a primary key), a filtered, search or interleaved index, or an
-  interleaved table. Ptah plans to create what a read leaves out, so leaving
-  such an object out would plan a change the database refuses.
+  a foreign key or CHECK constraint, a generated or identity column, a
+  filtered, search or interleaved index, or an interleaved table. Ptah plans
+  to create what a read leaves out, so leaving such an object out would plan a
+  change the database refuses.
+- **Tables without a primary key.** Spanner keys a table created without a
+  primary key on a hidden column `rowid` of its own. A read leaves that column
+  and its key out, so the table reads as declared and converges.
 - **Plans.** The provider owns the lifecycle of the engine's tables: Ptah hands
   it every table a plan creates, changes or drops, and it plans each statement
   itself, one action per statement as Spanner runs them.
+  - A table in a schema other than `public` follows `CREATE SCHEMA IF NOT
+    EXISTS`, written once per schema a plan creates tables in, as a YAML
+    source names the schema. A SQL or HCL source that declares a schema other
+    than `public` is refused by Ptah before the provider plans anything: the
+    host does not hand a provider a schema to create yet.
   - A created table is one `CREATE TABLE` with its key in key order, its
     defaults and its column `CHECK` constraints (an enum column is `TEXT` under
     a `CHECK` that lists its values), followed by its indexes and then by each
@@ -52,6 +70,14 @@ is evidence about the PostgreSQL interface, not about the managed service.
     default is added nullable and then made `NOT NULL`, because Spanner refuses
     to add it otherwise.
   - A dropped table, and a dropped column, lose their indexes first.
+  - A row deletion policy, `TTL INTERVAL '30 days' ON created_at`, follows
+    `CREATE TABLE`'s column list, and a kept table's policy changes in place
+    with `ADD TTL`, `ALTER TTL` or `DROP TTL`, after the table's column
+    additions and before its column removals. The interval is compared by the
+    days it denotes, because Spanner stores its own spelling (`30 days` reads
+    back as `4 WEEKS 2 DAYS`). A policy on a column that is not `timestamptz`,
+    an interval that is not a whole number of days, and a drop of the column a
+    kept policy counts from are refused before a statement is sent.
   - Spanner cannot change a primary key or the type of a key column, so a plan
     that does either is refused with that reason, as is any other type change
     and a column type Spanner does not have (`smallint`, `timestamp`, `json`,
@@ -99,13 +125,23 @@ is evidence about the PostgreSQL interface, not about the managed service.
   numbers compared by value, text in bytea hex is the bytes it spells, and a
   moment is rounded to the microsecond Spanner reads back. A moment written
   without an offset is UTC, and every moment the provider writes carries its
-  offset, because Spanner reads one without in America/Los_Angeles.
+  offset, because Spanner reads one without in America/Los_Angeles. A read
+  that names a transaction reads in it and sees what it wrote.
 - **Seeds.** `ptah seed` runs each file and its entry in the ledger
   `schema_seeds`, the table and layout Ptah's built-in Spanner engine kept, in
   one read-write transaction. A file that hits an existing key keeps nothing,
   and `--idempotent` records it instead. A file holding a schema statement, a
   transaction statement or a setting is refused before anything of it runs,
-  naming the line.
+  naming the line. A session with an open transaction runs no seed, because a
+  seed's transaction cannot join it.
+- **Operator statements.** A statement an operator writes, such as a
+  migration's `-- +ptah check` assertion, runs through the provider and
+  returns its columns and rows in the forms the declared rows use; a type no
+  common value holds, such as an array, arrives as its text. A read-only
+  statement runs only when it is one query that changes no row, and then in a
+  read-only transaction. Any other statement runs as written, in the
+  transaction it names or on its own. A statement Spanner refuses returns the
+  server's message and SQLSTATE.
 - **Migration lint.** `ptah migrations lint --dialect spanner` and `ptah sql
   lint --dialect spanner` read a file through the provider's split, which takes
   every statement a migration holds, and Ptah's rules for every engine run over
@@ -124,13 +160,39 @@ is evidence about the PostgreSQL interface, not about the managed service.
   as an `INSERT` (`SQL002`), and `CREATE INDEX CONCURRENTLY`, which Spanner
   refuses (`CAP001`). A text the provider cannot read, such as one with a
   dollar-quoted string, fails the run with the reason.
+- **Dev databases.** Ptah rehearses a plan on a dev database (`schema apply
+  --dev-url`) and replays a migration directory on one (`migrations generate
+  --replay`), and the provider lists and empties what the dev database holds:
+  change streams, views, foreign keys, indexes, tables (an interleaved table
+  before its parent), sequences, locality groups and, when the whole database
+  is cleaned, every schema but `public`. The lock table stays. The database's
+  DDL, as PGAdapter's `SHOW DATABASE DDL` prints it, is the inventory, so an
+  object of a kind the provider has no statement for, such as a role, stops the
+  cleanup before it drops anything, and so does a table that a foreign key from
+  outside the cleaned schemas references. The provider also judges each
+  replayed statement and refuses a change to a database option, a role or a
+  privilege, and a statement that sets session or transaction state. It
+  provisions no dev database, because a Spanner database is created through the
+  instance's administration API: `--dev-url` names a database that exists (the
+  emulator creates one on the first connection). A dev database needs a Ptah
+  release with [Ptah #5565](https://github.com/stokaro/ptah/pull/5565).
+
+- **Sources.** A table's row deletion policy is declared as Ptah's built-in
+  Spanner engine read it: the `platform.spanner.row_deletion_column` and
+  `platform.spanner.row_deletion_interval` attributes of a Go
+  `ptah:schema:table` directive, the `spanner` group of a YAML table's
+  `platform` key, or the `override` blocks of an HCL table's
+  `platform "spanner"` block. A Go or YAML table without a policy declares
+  none; an HCL table without the block leaves the policy it holds alone. An
+  export writes the policy back in the same spelling, and `ptah schema stats`
+  counts the tables that hold one. A SQL schema document's `TTL` clause is
+  refused: Ptah does not hand a provider a table clause of a SQL document yet.
 
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table
 that holds one is refused, and `migrations generate` refuses a schema with a
-foreign key, whose down file must drop it first), the row deletion policy, views and sequences, and
-the statements an operator writes, which the `-- +ptah check` assertions of a
-migration run as (a migration that holds one is refused before it runs). The plan and the measurements behind it are kept with
+foreign key, whose down file must drop it first). The plan and the
+measurements behind it are kept with
 #4204. Creating a table with a foreign key or a table `CHECK`, and writing a
 read as SQL with `ptah db read`, need a Ptah release with
 [Ptah #5559](https://github.com/stokaro/ptah/pull/5559).

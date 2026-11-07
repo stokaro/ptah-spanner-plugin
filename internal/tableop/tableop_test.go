@@ -55,6 +55,21 @@ func TestCapture_HappyPath(t *testing.T) {
 			statement: `ALTER TABLE "t" ADD CONSTRAINT "k" CHECK (a > 0);`, impact: protocol.ChangeSemantics_BEHAVIORAL},
 		{name: "drop a constraint", schema: "app", operation: tableop.Operation{Action: tableop.DropConstraint, Name: "k"},
 			statement: `ALTER TABLE "app"."t" DROP CONSTRAINT "k";`, impact: protocol.ChangeSemantics_BEHAVIORAL},
+		{name: "create a table with a row deletion policy", schema: "public", operation: tableop.Operation{Action: tableop.CreateTable, PrimaryKey: []string{"id"},
+			Columns:     []tableop.Column{{Name: "id", Type: "bigint"}, {Name: "ts", Type: "timestamptz", Nullable: true}},
+			RowDeletion: &tableop.RowDeletion{Column: "ts", Interval: "30 days"}},
+			statement: "CREATE TABLE \"t\" (\n  \"id\" bigint PRIMARY KEY NOT NULL,\n  \"ts\" timestamptz\n) TTL INTERVAL '30 days' ON \"ts\";",
+			impact:    protocol.ChangeSemantics_ADDITIVE},
+		{name: "add a row deletion policy", schema: "public", operation: tableop.Operation{Action: tableop.AddRowDeletion,
+			RowDeletion: &tableop.RowDeletion{Column: "ts", Interval: "7 days"}},
+			statement: `ALTER TABLE "t" ADD TTL INTERVAL '7 days' ON "ts";`, impact: protocol.ChangeSemantics_BEHAVIORAL},
+		{name: "alter a row deletion policy", schema: "app", operation: tableop.Operation{Action: tableop.AlterRowDeletion,
+			RowDeletion: &tableop.RowDeletion{Column: "ts", Interval: "60 days"}},
+			statement: `ALTER TABLE "app"."t" ALTER TTL INTERVAL '60 days' ON "ts";`, impact: protocol.ChangeSemantics_BEHAVIORAL},
+		{name: "drop a row deletion policy", schema: "public", operation: tableop.Operation{Action: tableop.DropRowDeletion},
+			statement: `ALTER TABLE "t" DROP TTL;`, impact: protocol.ChangeSemantics_ADDITIVE},
+		{name: "create a table's schema", schema: "app", operation: tableop.Operation{Action: tableop.CreateSchema, Name: "app"},
+			statement: `CREATE SCHEMA IF NOT EXISTS "app";`, impact: protocol.ChangeSemantics_ADDITIVE},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
