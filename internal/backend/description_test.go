@@ -84,3 +84,17 @@ func TestServer_RefusesAServiceTheServerLacks(t *testing.T) {
 	server.Description.Features = append(server.Description.Features, provider.TransactionsFeature)
 	c.Assert(server.Validate(), qt.ErrorIs, provider.ErrProtocol)
 }
+
+// The provider empties a dev database the host names and judges what a
+// replay runs on one; it provisions none, because a Spanner database is
+// created through the instance's administration API.
+func TestDescription_TheProviderCleansDevDatabases(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	engine := description.GetEngines()[0]
+	for _, feature := range []string{provider.DevCleanupFeature, provider.ReplayGuardFeature} {
+		c.Assert(engine.GetFeatures(), qt.Contains, feature)
+		c.Assert(description.GetFeatures(), qt.Contains, feature)
+	}
+	c.Assert(description.GetFeatures(), qt.Not(qt.Contains), provider.DevDatabaseFeature)
+}

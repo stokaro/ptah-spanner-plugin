@@ -68,6 +68,22 @@ is evidence about the PostgreSQL interface, not about the managed service.
   of a 30-second lease that every check extends. A holder that dies keeps the
   lock until its lease ends. A read reserves the table, so Ptah never plans its
   removal or writes it into an export.
+- **Dev databases.** Ptah rehearses a plan on a dev database (`schema apply
+  --dev-url`) and replays a migration directory on one (`migrations generate
+  --replay`), and the provider lists and empties what the dev database holds:
+  change streams, views, foreign keys, indexes, tables (an interleaved table
+  before its parent), sequences, locality groups and, when the whole database
+  is cleaned, every schema but `public`. The lock table stays. The database's
+  DDL, as PGAdapter's `SHOW DATABASE DDL` prints it, is the inventory, so an
+  object of a kind the provider has no statement for, such as a role, stops the
+  cleanup before it drops anything, and so does a table that a foreign key from
+  outside the cleaned schemas references. The provider also judges each
+  replayed statement and refuses a change to a database option, a role or a
+  privilege, and a statement that sets session or transaction state. It
+  provisions no dev database, because a Spanner database is created through the
+  instance's administration API: `--dev-url` names a database that exists (the
+  emulator creates one on the first connection). A dev database needs a Ptah
+  release with [Ptah #5565](https://github.com/stokaro/ptah/pull/5565).
 
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table

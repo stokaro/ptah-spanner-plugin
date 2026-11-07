@@ -21,5 +21,7 @@ func Server() runtime.Server {
 		TableCreations:  spanner,
 		Columns:         spanner,
 		FeaturePlanner:  spanner,
+		DevCleaner:      spanner,
+		ReplayGuard:     spanner,
 	}
 }

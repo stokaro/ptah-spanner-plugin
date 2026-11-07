@@ -113,6 +113,11 @@ func providerFeatures() []string {
 		provider.NormalizeValuesFeature,
 		// The host takes a lock before it applies a plan; see locks.go.
 		provider.LocksFeature,
+		// The host empties a dev database through the provider and asks it
+		// whether a replayed statement stays inside one; see devclean.go and
+		// replay.go.
+		provider.DevCleanupFeature,
+		provider.ReplayGuardFeature,
 	}
 }
 
