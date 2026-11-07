@@ -5,6 +5,7 @@ package integration_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -216,8 +217,13 @@ func TestHostGeneratesMigrationsWithForeignKeysE2E(t *testing.T) {
 	c.Assert(down, qt.HasLen, 1)
 	downText, err := os.ReadFile(down[0])
 	c.Assert(err, qt.IsNil)
+	// Every key is dropped before any table; once the keys are gone the tables
+	// may go in any order, and the host orders them by the keys it read.
 	c.Assert(string(downText), qt.Matches, `(?s).*\nALTER TABLE "ch" DROP CONSTRAINT "ch_p_fk";\nALTER TABLE "x" DROP CONSTRAINT "x_y_fk";\n`+
-		`ALTER TABLE "y" DROP CONSTRAINT "y_x_fk";\nDROP TABLE "ch";\nDROP TABLE "p";\nDROP TABLE "u";\nDROP TABLE "y";\nDROP TABLE "x";\n?`)
+		`ALTER TABLE "y" DROP CONSTRAINT "y_x_fk";\n(DROP TABLE "(ch|p|u|x|y)";\n){4}DROP TABLE "(ch|p|u|x|y)";\n?`)
+	for _, table := range []string{"ch", "p", "u", "x", "y"} {
+		c.Assert(strings.Count(string(downText), `DROP TABLE "`+table+`";`), qt.Equals, 1)
+	}
 
 	output, err = hostCommand(c, "migrations", "up", "--db-url", address, "--migrations-dir", migrations)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
