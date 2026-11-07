@@ -9,7 +9,11 @@
 // the plan beside them, ordered by explicit dependencies: an index after its
 // table, a foreign key after both its tables, a column change between the
 // index removals and additions of its table, the removal of an index before
-// its table's.
+// its table's. A kept table's foreign keys and CHECKs are compared with the
+// ones it holds, which no host step stands for: one dropped goes before any
+// column of the table changes and before the removal of a table it
+// references, and one added follows the column changes and the creation of a
+// table it references.
 //
 // A change Spanner cannot make is refused here, before a statement is sent:
 // a change of a primary key, a type change other than between character
@@ -65,10 +69,17 @@ type planner struct {
 	// receipts are the steps each table's parent receipt names, by the
 	// table's index in the request.
 	receipts map[int][]*protocol.StepIdentity
-	// created is the step that creates each table the plan creates.
-	created map[tableKey]*protocol.StepIdentity
+	// created is the step that creates each table the plan creates, and
+	// creationOrder those steps in the order they were planned.
+	created       map[tableKey]*protocol.StepIdentity
+	creationOrder []*protocol.StepIdentity
 	// tables are the tables of the request by key.
 	tables map[tableKey]*protocol.PlanningTable
+	// dropped is the step that removes each table the plan removes.
+	dropped map[tableKey]*protocol.StepIdentity
+	// keyDrops are the steps that drop a foreign key, which go before the
+	// removal of the tables they name.
+	keyDrops []keyDrop
 	// schemas is the step that creates each schema a created table names,
 	// other than the default one.
 	schemas map[string]*protocol.StepIdentity
@@ -103,6 +114,7 @@ func Plan(ctx context.Context, request *protocol.PlanFeaturesRequest) (*protocol
 		receipts:     make(map[int][]*protocol.StepIdentity),
 		created:      make(map[tableKey]*protocol.StepIdentity),
 		tables:       make(map[tableKey]*protocol.PlanningTable),
+		dropped:      make(map[tableKey]*protocol.StepIdentity),
 		schemas:      make(map[string]*protocol.StepIdentity),
 	}
 	for _, table := range request.GetTables() {
@@ -132,6 +144,7 @@ func Plan(ctx context.Context, request *protocol.PlanFeaturesRequest) (*protocol
 			return refused(err)
 		}
 	}
+	p.orderKeyDrops()
 	if err := p.claimRest(); err != nil {
 		return refused(err)
 	}
@@ -167,7 +180,7 @@ func strategy(action protocol.PlanningTable_Action) string {
 	case protocol.PlanningTable_CREATE:
 		return "Create the table, then its indexes and constraints"
 	case protocol.PlanningTable_DROP:
-		return "Drop the table's indexes, then the table"
+		return "Drop the table's foreign keys and indexes, then the table"
 	default:
 		return "Change the table one statement at a time"
 	}
@@ -213,6 +226,7 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 		return err
 	}
 	p.created[keyOf(table.GetSubject())] = step
+	p.creationOrder = append(p.creationOrder, step)
 	for _, declared := range desired.GetIndexes() {
 		created, err := indexOperation(declared)
 		if err != nil {
@@ -255,47 +269,46 @@ func (p *planner) createSchema(index int, subject *protocol.ComparisonIdentity, 
 }
 
 // constraints adds a step for each foreign key and table CHECK constraint a
-// created table declares, after the creation of the table and of every
-// created table it references. A foreign key is a statement of its own after
-// both tables, so two tables may reference each other.
+// created table declares, in name order, after the creation of the table and
+// of every created table it references. A foreign key is a statement of its
+// own after both tables, so two tables may reference each other. Ptah's
+// built-in Spanner engine added a table's constraints in name order.
 func (p *planner) constraints(index int, table *protocol.PlanningTable) error {
 	subject := table.GetSubject()
 	keys, err := foreignKeys(subject, table.GetDesired())
 	if err != nil {
 		return &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: err.Error()}
 	}
-	for _, key := range keys {
-		effects := []*protocol.PlanningEffect{readTable(subject), effect(childSubject(subject, "constraint", key.Name), protocol.PlanningEffect_CREATE)}
-		referenced := tableKey{schema: key.RefSchema, name: key.RefTable}
-		if target, found := p.tables[referenced]; found && referenced != keyOf(subject) {
-			effects = append(effects, readTable(target.GetSubject()))
-		}
-		id, err := p.add(index, subject, rankConstraint, tableop.Operation{Action: tableop.AddForeignKey, ForeignKey: &key}, nil, effects...)
-		if err != nil {
-			return err
-		}
-		p.depend(p.created[keyOf(subject)], id)
-		if creation, found := p.created[referenced]; found && referenced != keyOf(subject) {
-			p.depend(creation, id)
-		}
-	}
 	checks, err := tableChecks(subject, table.GetDesired())
 	if err != nil {
 		return &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: err.Error()}
 	}
+	var additions []constraintAddition
+	for _, key := range keys {
+		additions = append(additions, constraintAddition{name: key.Name, operation: tableop.Operation{Action: tableop.AddForeignKey, ForeignKey: &key},
+			referenced: tableKey{schema: key.RefSchema, name: key.RefTable}})
+	}
 	for _, check := range checks {
-		id, err := p.add(index, subject, rankConstraint, check, nil, readTable(subject), effect(childSubject(subject, "constraint", check.Name), protocol.PlanningEffect_CREATE))
+		additions = append(additions, constraintAddition{name: check.Name, operation: check})
+	}
+	for _, addition := range sortedAdditions(additions) {
+		id, err := p.add(index, subject, rankConstraint, addition.operation, nil,
+			p.constraintEffects(subject, addition.name, protocol.PlanningEffect_CREATE, addition.referenced)...)
 		if err != nil {
 			return err
 		}
 		p.depend(p.created[keyOf(subject)], id)
+		if creation, found := p.created[addition.referenced]; found && addition.referenced != keyOf(subject) {
+			p.depend(creation, id)
+		}
 	}
 	return nil
 }
 
 // drop replaces the host's removal of a table with DROP TABLE, after a step
-// that drops each index the table holds: Spanner refuses to drop a table
-// that has an index (`Cannot drop table t with indices: t_i`).
+// that drops each index the table holds, since Spanner refuses to drop a
+// table that has an index (`Cannot drop table t with indices: t_i`), and a
+// step that drops each of its foreign keys.
 func (p *planner) drop(index int, table *protocol.PlanningTable) error {
 	current := table.GetCurrent()
 	if current == nil {
@@ -309,6 +322,7 @@ func (p *planner) drop(index int, table *protocol.PlanningTable) error {
 	if err != nil {
 		return err
 	}
+	p.dropped[keyOf(table.GetSubject())] = step
 	for _, held := range current.GetIndexes() {
 		id, err := p.add(index, table.GetSubject(), rankIndex, tableop.Operation{Action: tableop.DropIndex, Name: held.GetName()}, nil,
 			readTable(table.GetSubject()), effect(indexSubject(table.GetSubject(), held.GetName()), protocol.PlanningEffect_DROP))
@@ -317,13 +331,13 @@ func (p *planner) drop(index int, table *protocol.PlanningTable) error {
 		}
 		p.depend(id, step)
 	}
-	return nil
+	return p.dropForeignKeys(index, table)
 }
 
 // alter plans a table the plan keeps: it claims the host's steps that add
 // and drop its columns and indexes, and adds a step for each change of a
-// column's type, default and nullability and of the table's row deletion
-// policy. A change of the primary key is refused.
+// column's type, default and nullability, of its foreign keys and CHECKs and
+// of the table's row deletion policy. A change of the primary key is refused.
 func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 	desired, current := table.GetDesired(), table.GetCurrent()
 	if desired == nil || current == nil {
@@ -335,27 +349,15 @@ func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 			"changing the primary key of table %s from (%s) to (%s): Spanner cannot change a table's primary key; create a new table with the key and copy the rows",
 			phrase(subject), strings.Join(held, ", "), strings.Join(declared, ", "))}
 	}
-	var removals, additions, alterations, dropped []*protocol.StepIdentity
-	for _, common := range p.request.GetCommonSteps() {
-		if !proto.Equal(common.GetParent(), subject) || common.GetCommonObject() != nil {
-			continue
-		}
-		step, kind, err := p.claimAlteration(index, table, common)
-		if err != nil {
-			return err
-		}
-		switch kind {
-		case "index-removal":
-			removals = append(removals, step)
-		case "index-addition":
-			additions = append(additions, step)
-		case "column-addition":
-			alterations = append(alterations, step)
-		case "column-removal":
-			dropped = append(dropped, step)
-		}
+	claimed, err := p.claimHostSteps(index, table)
+	if err != nil {
+		return err
 	}
 	changed, err := p.columnChanges(index, table)
+	if err != nil {
+		return err
+	}
+	dropped, added, err := p.constraintChanges(index, table)
 	if err != nil {
 		return err
 	}
@@ -363,27 +365,73 @@ func (p *planner) alter(index int, table *protocol.PlanningTable) error {
 	if err != nil {
 		return err
 	}
+	columns := slices.Concat(changed, claimed.columnAdditions)
+	// A constraint is dropped before any column of its table changes,
+	// because Spanner refuses to drop a column a constraint names (`Cannot
+	// drop column score on which there is a dependent check constraint`), and
+	// added once every column it may name is in place.
+	for _, drop := range dropped {
+		for _, step := range slices.Concat(columns, claimed.columnRemovals) {
+			p.depend(drop, step)
+		}
+	}
+	for _, addition := range added {
+		for _, step := range columns {
+			p.depend(step, addition)
+		}
+	}
 	// A policy changes after the columns it may count from are added and
 	// before the column it counted from is dropped.
 	for _, step := range policies {
-		for _, addition := range alterations {
+		for _, addition := range claimed.columnAdditions {
 			p.depend(addition, step)
 		}
-		for _, removal := range dropped {
+		for _, removal := range claimed.columnRemovals {
 			p.depend(step, removal)
 		}
 	}
 	// A column changes after the indexes it may lose are gone and before the
 	// indexes it may gain are built.
-	for _, step := range slices.Concat(changed, alterations) {
-		for _, removal := range removals {
+	for _, step := range columns {
+		for _, removal := range claimed.indexRemovals {
 			p.depend(removal, step)
 		}
-		for _, addition := range additions {
+		for _, addition := range claimed.indexAdditions {
 			p.depend(step, addition)
 		}
 	}
 	return nil
+}
+
+// claimedSteps are the steps that replace the host's steps of an altered
+// table, by what each stood for.
+type claimedSteps struct {
+	indexRemovals, indexAdditions, columnAdditions, columnRemovals []*protocol.StepIdentity
+}
+
+// claimHostSteps replaces each host step of an altered table.
+func (p *planner) claimHostSteps(index int, table *protocol.PlanningTable) (claimedSteps, error) {
+	var claimed claimedSteps
+	for _, common := range p.request.GetCommonSteps() {
+		if !proto.Equal(common.GetParent(), table.GetSubject()) || common.GetCommonObject() != nil {
+			continue
+		}
+		step, kind, err := p.claimAlteration(index, table, common)
+		if err != nil {
+			return claimedSteps{}, err
+		}
+		switch kind {
+		case "index-removal":
+			claimed.indexRemovals = append(claimed.indexRemovals, step)
+		case "index-addition":
+			claimed.indexAdditions = append(claimed.indexAdditions, step)
+		case "column-addition":
+			claimed.columnAdditions = append(claimed.columnAdditions, step)
+		case "column-removal":
+			claimed.columnRemovals = append(claimed.columnRemovals, step)
+		}
+	}
+	return claimed, nil
 }
 
 // claimAlteration replaces one host step of an altered table and reports
@@ -428,7 +476,9 @@ func (p *planner) claimAlteration(index int, table *protocol.PlanningTable, comm
 // addColumn replaces the host's addition of a column. A NOT NULL column
 // without a default is added nullable and then made NOT NULL, because
 // Spanner refuses to add it otherwise; the second step carries the note
-// Ptah's built-in Spanner engine wrote.
+// Ptah's built-in Spanner engine wrote. The column's CHECK and foreign key
+// are added after it by constraintChanges, as the built-in added them, since
+// Spanner takes no constraint in ADD COLUMN.
 func (p *planner) addColumn(index int, table *protocol.PlanningTable, common *protocol.CommonPlanningStep, added *protocol.PlanningColumn) (*protocol.StepIdentity, string, error) {
 	subject := table.GetSubject()
 	declared := declaredColumn(table.GetDesired(), added.GetName())
@@ -439,16 +489,7 @@ func (p *planner) addColumn(index int, table *protocol.PlanningTable, common *pr
 	if err != nil {
 		return nil, "", &refusal{table: index, code: protocol.PlanningDiagnostic_INVALID_SCHEMA, message: err.Error()}
 	}
-	if column.Check != "" {
-		return nil, "", &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: fmt.Sprintf(
-			"adding column %q with a CHECK constraint to table %s: the provider does not read CHECK constraints back yet, so it adds none to an existing table",
-			column.Name, phrase(subject))}
-	}
-	if declared.GetForeignReference() != "" {
-		return nil, "", &refusal{table: index, code: protocol.PlanningDiagnostic_UNSUPPORTED_FEATURE, message: fmt.Sprintf(
-			"adding column %q with a foreign key to table %s: the provider does not read foreign keys back yet, so it adds none to an existing table",
-			column.Name, phrase(subject))}
-	}
+	column.Check, column.CheckName = "", ""
 	notNull := !column.Nullable && column.Default == nil
 	if notNull {
 		column.Nullable = true

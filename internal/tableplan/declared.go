@@ -8,6 +8,7 @@ import (
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 
+	"github.com/stokaro/ptah-spanner-plugin/internal/checkexpr"
 	"github.com/stokaro/ptah-spanner-plugin/internal/coltype"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 )
@@ -96,7 +97,9 @@ func DefaultSQL(table *protocol.DeclaredTable, column *protocol.DeclaredColumn) 
 // nullability: Spanner makes it NOT NULL whatever it says, and the statement
 // says what the declaration does, as Ptah's built-in Spanner engine wrote it.
 // Its CHECK is the column's own and, for an enum column, the list of its
-// values, under the column's check name or `<table>_<column>_check`.
+// values, under the column's check name or `<table>_<column>_check`. A host
+// that lowers an enum column for Spanner hands the list as the column's own
+// CHECK as well, and the list is then written once.
 func ddlColumn(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTable, declared *protocol.DeclaredColumn) (tableop.Column, error) {
 	columnType := ColumnType(table, declared)
 	if _, err := coltype.Canonical(columnType); err != nil {
@@ -111,7 +114,7 @@ func ddlColumn(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTab
 			quoted[i] = "'" + strings.ReplaceAll(value, "'", "''") + "'"
 		}
 		listed := declared.GetName() + " IN (" + strings.Join(quoted, ", ") + ")"
-		if check != "" {
+		if check != "" && !checkexpr.Equivalent(check, listed, nil) {
 			listed = "(" + check + ") AND " + listed
 		}
 		check = listed

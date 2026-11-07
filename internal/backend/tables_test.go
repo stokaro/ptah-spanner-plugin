@@ -6,6 +6,7 @@ import (
 
 	qt "github.com/frankban/quicktest"
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/backend"
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
@@ -77,6 +78,42 @@ func TestPrepareTables(t *testing.T) {
 	c.Assert(result.GetTables()[0].GetColumnPrimaryKeys(), qt.DeepEquals, []string{"b", "a"})
 	c.Assert(result.GetTables()[1].GetColumnPrimaryKeys(), qt.DeepEquals, []string{"id"})
 	c.Assert(result.GetTables()[1].GetColumnPrimaryKeysPrepared(), qt.IsTrue)
+}
+
+// Under the index NULLS order, a prepared table states each declared index's
+// key parts in the form a read states them: FIRST or LAST only where the
+// order is not Spanner's default for the direction, NULLS LAST ascending and
+// NULLS FIRST descending. A key listed as fields is in the default order.
+func TestPrepareTables_StatesIndexNullsOrders(t *testing.T) {
+	c := testcheck.New(t)
+	request := &protocol.PrepareTablesRequest{Engine: "spanner", TargetFeatures: backend.Description().GetEngines()[0].GetFeatures(),
+		Tables: []*protocol.TablePreparationInput{{Desired: &protocol.DeclaredTable{Name: "t", Columns: []*protocol.DeclaredColumn{{Name: "a"}, {Name: "b"}},
+			Indexes: []*protocol.DeclaredIndex{
+				{Name: "t_fields", Fields: []string{"a", "b"}},
+				{Name: "t_parts", Parts: []*protocol.CapturedIndexPart{
+					{Column: "a", Nulls: "first"}, {Column: "b", Descending: true, Nulls: "LAST"},
+					{Column: "a", Nulls: "LAST"}, {Column: "b", Descending: true, Nulls: "FIRST"}, {Column: "a"},
+				}},
+			}}}}}
+	result, err := backend.New().PrepareTables(context.Background(), request)
+	c.Assert(err, qt.IsNil)
+	c.Assert(provider.ValidatePreparedTablesReply(backend.Description(), request, result), qt.IsNil)
+	indexes := result.GetTables()[0].GetIndexes()
+	c.Assert(indexes, qt.HasLen, 2)
+	c.Assert(indexes[0].GetName(), qt.Equals, "t_fields")
+	c.Assert(indexes[0].GetNulls(), qt.DeepEquals, []string{"", ""})
+	c.Assert(indexes[1].GetName(), qt.Equals, "t_parts")
+	c.Assert(indexes[1].GetNulls(), qt.DeepEquals, []string{"FIRST", "LAST", "", "", ""})
+}
+
+// A host that did not negotiate the NULLS order gets no prepared index.
+func TestPrepareTables_StatesNoIndexWithoutTheFeature(t *testing.T) {
+	c := testcheck.New(t)
+	request := &protocol.PrepareTablesRequest{Engine: "spanner", Tables: []*protocol.TablePreparationInput{{Desired: &protocol.DeclaredTable{Name: "t",
+		Columns: []*protocol.DeclaredColumn{{Name: "a"}}, Indexes: []*protocol.DeclaredIndex{{Name: "t_a", Fields: []string{"a"}}}}}}}
+	result, err := backend.New().PrepareTables(context.Background(), request)
+	c.Assert(err, qt.IsNil)
+	c.Assert(result.GetTables()[0].GetIndexes(), qt.HasLen, 0)
 }
 
 // The declarations Spanner cannot hold are reported before anything runs,

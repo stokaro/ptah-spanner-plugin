@@ -1,18 +1,19 @@
 // Package backend serves Cloud Spanner's PostgreSQL interface to Ptah through
 // the experimental provider protocol. It opens sessions through PGAdapter,
-// reads tables, columns, primary keys, secondary indexes and row deletion
-// policies from information_schema, owns the lifecycle of the engine's tables
-// (it checks a declaration, predicts what a creation holds, judges column
-// types and defaults in Spanner's spelling and plans every table statement),
-// and renders and runs the statements it plans. It reads and writes a table's
-// row deletion policy in Go, YAML and HCL sources, and compares, reverses and
-// counts it. It also types, reads and writes the rows a schema declares, and
-// runs seed files with their ledger.
+// reads tables, columns, primary keys, secondary indexes, foreign keys, CHECKs
+// and row deletion policies from information_schema, owns the lifecycle of the
+// engine's tables (it checks a declaration, predicts what a creation holds,
+// judges column types, defaults and CHECKs in Spanner's spelling and plans
+// every table statement), and renders and runs the statements it plans. It
+// reads and writes a table's row deletion policy in Go, YAML and HCL sources,
+// and compares, reverses and counts it. It also types, reads and writes the
+// rows a schema declares, and runs seed files with their ledger.
 //
 // The provider describes what it reads completely or refuses the read: an
-// object it does not describe yet, such as a foreign key or a view, fails the
+// object it does not describe yet, such as an interleaved table, fails the
 // read with a reason instead of disappearing from it, because the host would
-// plan to create what a read leaves out.
+// plan to create what a read leaves out. A host that cannot take a table's
+// foreign keys and CHECKs gets the same refusal for them.
 package backend
 
 import (
@@ -106,6 +107,13 @@ func providerFeatures() []string {
 		provider.ObservedColumnsFeature,
 		provider.ObservedPrimaryKeysFeature,
 		provider.ObservedIndexesFeature,
+		// A read reports each table's foreign keys and CHECKs, each CHECK as
+		// Spanner keeps it, and each index key's NULLS order where it is not
+		// the default for its direction, which table preparation states the
+		// same way for a declared index; see catalog and
+		// ddl.IndexKey.StatedNulls.
+		provider.ObservedConstraintsFeature,
+		provider.IndexNullsOrderFeature,
 		// The provider owns the lifecycle of the engine's tables: it checks a
 		// declaration, states its key columns, predicts what a creation holds,
 		// judges columns in Spanner's spelling, and plans every statement
@@ -121,6 +129,12 @@ func providerFeatures() []string {
 		// A changed primary key reaches the planning service, which refuses
 		// it by name: Spanner cannot change a table's key.
 		provider.PrimaryKeyChangesFeature,
+		// A kept table's changed foreign keys and CHECKs reach the planning
+		// service, which drops and adds them, and the host asks the provider
+		// whether a declared CHECK and the one Spanner keeps are one; see
+		// tableplan.SameCheck.
+		provider.ConstraintChangesFeature,
+		provider.CheckEquivalenceFeature,
 		// Every Ptah command plans in the exact statement style, which is the
 		// only style the provider writes: no statement carries an existence
 		// guard, which Spanner refuses on ALTER.
@@ -189,8 +203,12 @@ func engineFeatures() []string {
 }
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider: the one the SDK it is built with speaks, which is the contract its
-// live tests run against. An older host is refused before a session opens.
+// provider, below the one the SDK it is built with speaks. The additions of
+// contract 25.28 that it uses are negotiated: a host of 25.27 lists none of
+// them, and gets reads that refuse a table's foreign keys and CHECKs, as it
+// did before, and comparisons and plans without them. The live tests run
+// against such a host and against one that negotiates them. An older host is
+// refused before a session opens.
 const minimumContract = 27
 
 // Description declares the provider and the spanner engine.

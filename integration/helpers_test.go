@@ -5,6 +5,7 @@ package integration_test
 import (
 	"context"
 	"crypto/rand"
+	"debug/buildinfo"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -37,11 +38,17 @@ func hostFeatures() []string {
 
 func startProvider(c *qt.C) *providerruntime.Client {
 	c.Helper()
+	return startProviderWith(c, hostFeatures()...)
+}
+
+// startProviderWith starts the provider for a host that lists features.
+func startProviderWith(c *qt.C, features ...string) *providerruntime.Client {
+	c.Helper()
 	binary, digest := providerBinary(c)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	client, err := providerruntime.Start(ctx, providerruntime.Options{
-		Executable: binary, SHA256: digest, ProviderID: backend.ProviderID, HostFeatures: hostFeatures(),
+		Executable: binary, SHA256: digest, ProviderID: backend.ProviderID, HostFeatures: features,
 	})
 	c.Assert(err, qt.IsNil)
 	c.Cleanup(client.Close)
@@ -198,6 +205,28 @@ func skipOnOldHost(c *qt.C, output string, err error, refusal, change string) {
 	c.Helper()
 	if err != nil && strings.Contains(output, refusal) {
 		c.Skipf("the host predates %s: %s", change, refusal)
+	}
+}
+
+// skipBeforeConstraints skips the test when the host speaks a contract older
+// than 25.28, which carries a table's foreign keys and CHECKs, their changes,
+// CHECK equivalence and index NULLS orders: the host pins a provider-sdk
+// older than v0.25.0. A host of 25.27 reads no constraint, so the provider
+// refuses the read of a table that holds one, as it did before 25.28. The
+// release leg runs such a host until a Ptah release speaks 25.28.
+func skipBeforeConstraints(c *qt.C) {
+	c.Helper()
+	host, _ := hostManifest(c)
+	info, err := buildinfo.ReadFile(host)
+	c.Assert(err, qt.IsNil)
+	for _, dependency := range info.Deps {
+		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+			continue
+		}
+		var major, minor int
+		if _, err := fmt.Sscanf(dependency.Version, "v%d.%d.", &major, &minor); err == nil && major == 0 && minor < 25 {
+			c.Skipf("the host pins provider-sdk %s, which predates contract 25.28", dependency.Version)
+		}
 	}
 }
 

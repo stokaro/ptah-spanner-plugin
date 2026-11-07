@@ -7,6 +7,7 @@ import (
 
 	qt "github.com/frankban/quicktest"
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
 )
@@ -170,7 +171,8 @@ func TestInspectionSubprocess_ViewsAndSequences(t *testing.T) {
 
 // A read refuses an object it does not describe yet, with a reason naming it,
 // rather than leaving it out: the host would plan to create what a read leaves
-// out.
+// out. A foreign key or a CHECK is refused to a host that does not negotiate
+// observed constraints, which this test's host does not.
 func TestInspectionSubprocess_FailurePath(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -181,11 +183,11 @@ func TestInspectionSubprocess_FailurePath(t *testing.T) {
 			wantErr: `.*\(FailedPrecondition\): view "public"\."v" needs a host that carries views and sequences \(schema\.common-objects\)`},
 		{name: "a sequence for a host that carries no common object", statements: []string{`CREATE SEQUENCE s`},
 			wantErr: `.*\(FailedPrecondition\): sequence "public"\."s" needs a host that carries views and sequences \(schema\.common-objects\)`},
-		{name: "a foreign key", statements: []string{`CREATE TABLE p (id bigint PRIMARY KEY)`,
+		{name: "a foreign key for a host that reads no constraint", statements: []string{`CREATE TABLE p (id bigint PRIMARY KEY)`,
 			`CREATE TABLE ch (id bigint PRIMARY KEY, p bigint, CONSTRAINT fk_ch_p FOREIGN KEY (p) REFERENCES p (id))`},
-			wantErr: `.*\(FailedPrecondition\): table "public"\."ch" has the FOREIGN KEY constraint "fk_ch_p", which the provider does not describe yet`},
-		{name: "a check constraint", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, n bigint, CONSTRAINT n_ok CHECK (n > 0))`},
-			wantErr: `.*\(FailedPrecondition\): table "public"\."t" has the CHECK constraint "n_ok", which the provider does not describe yet`},
+			wantErr: `.*\(FailedPrecondition\): table "public"\."ch" has the FOREIGN KEY constraint "fk_ch_p", which needs a host that reads constraints \(schema\.observed-constraints\)`},
+		{name: "a check constraint for a host that reads no constraint", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, n bigint, CONSTRAINT n_ok CHECK (n > 0))`},
+			wantErr: `.*\(FailedPrecondition\): table "public"\."t" has the CHECK constraint "n_ok", which needs a host that reads constraints \(schema\.observed-constraints\)`},
 		{name: "a generated column", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, g bigint GENERATED ALWAYS AS (id * 2) STORED)`},
 			wantErr: `.*\(FailedPrecondition\): column "g" of table "public"\."t" is generated, which the provider does not describe yet`},
 		{name: "a filtered index", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, n bigint)`, `CREATE INDEX nf ON t (n) WHERE n IS NOT NULL`},
@@ -206,4 +208,60 @@ func TestInspectionSubprocess_FailurePath(t *testing.T) {
 			c.Assert(snapshot, qt.IsNil)
 		})
 	}
+}
+
+// readConstraint is the part of an observed constraint a test compares.
+type readConstraint struct {
+	Table, Name, Type       string
+	Columns, ForeignColumns []string
+	ForeignTable, Schema    string
+	DeleteRule, UpdateRule  string
+	Clause                  string
+}
+
+func readConstraints(snapshot *protocol.Schema) []readConstraint {
+	var constraints []readConstraint
+	for _, table := range snapshot.GetTables() {
+		for _, constraint := range table.GetConstraints() {
+			constraints = append(constraints, readConstraint{Table: constraint.GetTableName(), Name: constraint.GetName(), Type: constraint.GetType(),
+				Columns: constraint.GetColumnNames(), ForeignColumns: constraint.GetForeignColumns(), ForeignTable: constraint.GetForeignTable(),
+				Schema: constraint.GetForeignSchema(), DeleteRule: constraint.GetDeleteRule(), UpdateRule: constraint.GetUpdateRule(), Clause: constraint.GetCheckClause()})
+		}
+	}
+	return constraints
+}
+
+// A host that negotiates observed constraints reads each foreign key with its
+// columns in key order, the table and columns it references and its rules in
+// information_schema's spelling, and each CHECK as Spanner keeps it, less the
+// CHECKs Spanner keeps for NOT NULL columns. The unique index Spanner builds
+// for a key that references columns other than a key is in no list, nor is
+// the index it builds on the referencing side. With the index NULLS order a
+// key states its order only against its direction's default.
+func TestInspectionSubprocess_ReadsConstraints(t *testing.T) {
+	c := testcheck.New(t)
+	address := freshDatabase(c)
+	execSQL(c, address,
+		`CREATE TABLE parent (a bigint NOT NULL, b bigint NOT NULL, c bigint, PRIMARY KEY (a, b))`,
+		`CREATE TABLE child (id bigint PRIMARY KEY, x bigint, y bigint, z bigint NOT NULL, score bigint,
+  CONSTRAINT child_ab_fk FOREIGN KEY (x, y) REFERENCES parent (a, b) ON DELETE CASCADE,
+  CONSTRAINT child_c_fk FOREIGN KEY (z) REFERENCES parent (c),
+  CONSTRAINT child_score_check CHECK (score BETWEEN 0 AND 10))`,
+		`CREATE INDEX child_nulls ON child (x ASC NULLS LAST, y DESC NULLS LAST, score NULLS FIRST)`,
+	)
+	client := startProviderWith(c, append(hostFeatures(), provider.ObservedConstraintsFeature, provider.IndexNullsOrderFeature)...)
+	session := openSession(c, client, address)
+	snapshot, err := client.Inspect(c.Context(), &protocol.InspectRequest{SessionId: session.GetId()})
+	c.Assert(err, qt.IsNil)
+	c.Assert(readConstraints(snapshot), qt.DeepEquals, []readConstraint{
+		{Table: "child", Name: "child_ab_fk", Type: "FOREIGN KEY", Columns: []string{"x", "y"}, ForeignColumns: []string{"a", "b"}, ForeignTable: "parent",
+			Schema: "public", DeleteRule: "CASCADE", UpdateRule: "NO ACTION"},
+		{Table: "child", Name: "child_c_fk", Type: "FOREIGN KEY", Columns: []string{"z"}, ForeignColumns: []string{"c"}, ForeignTable: "parent",
+			Schema: "public", DeleteRule: "NO ACTION", UpdateRule: "NO ACTION"},
+		{Table: "child", Name: "child_score_check", Type: "CHECK", Clause: "((score >= '0'::bigint) AND (score <= '10'::bigint))"},
+	})
+	tables := readTables(snapshot)
+	c.Assert(tables, qt.HasLen, 2)
+	c.Assert(tables[0].Indexes, qt.DeepEquals, []readIndex{{Name: "child_nulls", Keys: []string{"x ASC", "y DESC NULLS LAST", "score ASC NULLS FIRST"}}})
+	c.Assert(tables[1].Indexes, qt.HasLen, 0)
 }

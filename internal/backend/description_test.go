@@ -59,6 +59,21 @@ func TestDescription_TheProviderOwnsItsTables(t *testing.T) {
 	c.Assert(engine.GetPlanning()[0].GetOperationKinds(), qt.DeepEquals, []string{"github.com/stokaro/ptah-spanner-plugin/table-operation"})
 }
 
+// The provider reads a table's foreign keys and CHECKs, plans their changes on
+// a kept table, decides whether a declared CHECK is the one Spanner keeps, and
+// states each index key's NULLS order on both sides: the four additions of
+// contract 25.28.
+func TestDescription_ReadsAndPlansConstraints(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	engine := description.GetEngines()[0]
+	for _, feature := range []string{provider.ObservedConstraintsFeature, provider.ConstraintChangesFeature, provider.CheckEquivalenceFeature,
+		provider.IndexNullsOrderFeature} {
+		c.Assert(engine.GetFeatures(), qt.Contains, feature)
+		c.Assert(description.GetFeatures(), qt.Contains, feature)
+	}
+}
+
 // Migrations keep their records through the provider: revision history, the
 // log and tags, transactions for the records, and a split of each body into
 // the statements Spanner runs one by one.

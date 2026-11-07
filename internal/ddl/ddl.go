@@ -1,6 +1,6 @@
 // Package ddl writes the schema statements of Spanner's PostgreSQL interface:
 // CREATE TABLE and DROP TABLE, the ALTER TABLE statements that add, change and
-// drop a column or add a constraint, and CREATE INDEX and DROP INDEX.
+// drop a column or add and drop a constraint, and CREATE INDEX and DROP INDEX.
 //
 // It connects to nothing. A statement it cannot write correctly is refused
 // with an error naming why, before anything reaches the server. Spanner runs
@@ -65,6 +65,23 @@ type ForeignKey struct {
 	// OnDelete is CASCADE or NO ACTION, or empty for the default. Spanner
 	// has no other action.
 	OnDelete string
+}
+
+// StatedNulls is the key's NULLS order in the one form a read and a table
+// preparation both state: FIRST or LAST where it differs from Spanner's
+// default for the key's direction, and empty where it is the default, whether
+// the key spells the default or leaves it out. Spanner orders NULLs as
+// PostgreSQL does, last in an ascending key and first in a descending one;
+// measured on the emulator behind PGAdapter 0.56.2, information_schema reports
+// `ASC` for a key created `ASC NULLS LAST` and `DESC NULLS LAST` for one
+// created so. Any other spelling is returned upper-cased for its caller to
+// refuse.
+func (k IndexKey) StatedNulls() string {
+	nulls := strings.ToUpper(strings.TrimSpace(k.Nulls))
+	if k.Descending && nulls == "FIRST" || !k.Descending && nulls == "LAST" {
+		return ""
+	}
+	return nulls
 }
 
 // TTL is a table's row deletion policy: Spanner deletes a row once Interval
@@ -326,6 +343,16 @@ func AddCheck(schema, table, name, expression string) (string, error) {
 		return "", fmt.Errorf("a CHECK constraint of table %s needs a name and an expression", Name(schema, table))
 	}
 	return "ALTER TABLE " + Name(schema, table) + " ADD CONSTRAINT " + Quote(name) + " CHECK (" + strings.TrimSpace(expression) + ");", nil
+}
+
+// DropConstraint writes ALTER TABLE ... DROP CONSTRAINT. It carries no IF
+// EXISTS, which Spanner refuses (measured on the emulator behind PGAdapter
+// 0.56.2: `<IF [NOT] EXISTS> is not supported in <ALTER> statement
+// operations`). Ptah's built-in Spanner engine wrote the guard into a plan of
+// several changes, which stopped at that statement after the ones before it
+// ran (stokaro/ptah#4204 S2).
+func DropConstraint(schema, table, name string) string {
+	return "ALTER TABLE " + Name(schema, table) + " DROP CONSTRAINT " + Quote(name) + ";"
 }
 
 // columnDefinition writes one column: its name, its type as declared,

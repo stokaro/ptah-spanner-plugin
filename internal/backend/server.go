@@ -40,5 +40,6 @@ func Server() runtime.Server {
 		ReplayGuard:     spanner,
 		Statements:      spanner,
 		CommonObjects:   spanner,
+		CheckComparer:   spanner,
 	}
 }
