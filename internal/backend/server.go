@@ -21,5 +21,9 @@ func Server() runtime.Server {
 		TableCreations:  spanner,
 		Columns:         spanner,
 		FeaturePlanner:  spanner,
+		RowTyper:        spanner,
+		RowReader:       spanner,
+		RowWriter:       spanner,
+		Seeds:           spanner,
 	}
 }

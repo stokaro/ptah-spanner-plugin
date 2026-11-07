@@ -4,7 +4,8 @@
 // information_schema, owns the lifecycle of the engine's tables (it checks a
 // declaration, predicts what a creation holds, judges column types and
 // defaults in Spanner's spelling and plans every table statement), and
-// renders and runs the statements it plans.
+// renders and runs the statements it plans. It also types, reads and writes
+// the rows a schema declares, and runs seed files with their ledger.
 //
 // The provider describes what it reads completely or refuses the read: an
 // object it does not describe yet, such as a foreign key or a view, fails the
@@ -113,6 +114,12 @@ func providerFeatures() []string {
 		provider.NormalizeValuesFeature,
 		// The host takes a lock before it applies a plan; see locks.go.
 		provider.LocksFeature,
+		// Declared rows are typed, read and written by the provider, and seed
+		// files run through it with their ledger; see rows.go and seeds.go.
+		provider.TypeRowsFeature,
+		provider.ReadRowsFeature,
+		provider.RenderRowWritesFeature,
+		provider.SeedsFeature,
 	}
 }
 
@@ -144,6 +151,7 @@ func Description() *protocol.Description {
 			ReleaseLines:  releaseLines(),
 			Features:      engineFeatures(),
 			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, rowdeletion.Models()...),
+			QueryDialect:  queryDialect(),
 			Planning: []*protocol.ModelPlanning{{
 				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), OperationKinds: []string{tableop.Kind},
 			}},

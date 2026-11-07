@@ -68,6 +68,20 @@ is evidence about the PostgreSQL interface, not about the managed service.
   of a 30-second lease that every check extends. A holder that dies keeps the
   lock until its lease ends. A read reserves the table, so Ptah never plans its
   removal or writes it into an export.
+- **Declared rows.** Rows a schema declares (`//ptah:schema:data`) are typed,
+  read and written by the provider. A value is compared in one form for its
+  column type, so a row Spanner stores in another spelling plans nothing:
+  numeric `1e3` is 1000 and `12.50` is 12.5, JSON members are sorted and
+  numbers compared by value, text in bytea hex is the bytes it spells, and a
+  moment is rounded to the microsecond Spanner reads back. A moment written
+  without an offset is UTC, and every moment the provider writes carries its
+  offset, because Spanner reads one without in America/Los_Angeles.
+- **Seeds.** `ptah seed` runs each file and its entry in the ledger
+  `schema_seeds`, the table and layout Ptah's built-in Spanner engine kept, in
+  one read-write transaction. A file that hits an existing key keeps nothing,
+  and `--idempotent` records it instead. A file holding a schema statement, a
+  transaction statement or a setting is refused before anything of it runs,
+  naming the line.
 
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table
