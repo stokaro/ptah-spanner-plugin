@@ -25,5 +25,6 @@ func Server() runtime.Server {
 		RowReader:       spanner,
 		RowWriter:       spanner,
 		Seeds:           spanner,
+		Linter:          spanner,
 	}
 }
