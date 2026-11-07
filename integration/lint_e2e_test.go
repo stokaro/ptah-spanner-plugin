@@ -126,10 +126,11 @@ func TestHostLintsADownFileThroughTheProviderE2E(t *testing.T) {
 // `ptah sql lint` reads a Spanner file by the statement facts of the
 // provider's split: a table without a primary key is DDL001, a data statement
 // is SQL002, and CREATE INDEX CONCURRENTLY is CAP001, as the built-in reported
-// them. The host answers the capability from the Spanner preset it still
-// builds in. A statement of Spanner's own the built-in grammar refused, such
-// as a bit-reversed sequence, is a statement no rule examined (SQL004) rather
-// than unsupported SQL.
+// them. The host answers the capability from the facts the provider states
+// for a command without a server (engine.default-capabilities), the built-in
+// engine's preset. A statement of Spanner's own the built-in grammar refused,
+// such as a bit-reversed sequence, is a statement no rule examined (SQL004)
+// rather than unsupported SQL.
 func TestHostLintsASQLFileThroughTheProviderE2E(t *testing.T) {
 	c := testcheck.New(t)
 	file := filepath.Join(writeFiles(c, map[string]string{"wide.sql": `CREATE TABLE nopk (a bigint);

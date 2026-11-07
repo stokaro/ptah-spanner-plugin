@@ -145,6 +145,10 @@ func providerFeatures() []string {
 		provider.NormalizeValuesFeature,
 		// The host takes a lock before it applies a plan; see locks.go.
 		provider.LocksFeature,
+		// The engine states the capability facts the host plans it with
+		// when no session states the server's, and those of its release
+		// line; see offlineCapabilities.
+		provider.DefaultCapabilitiesFeature,
 		// A table's row deletion policy: Go, YAML and HCL sources declare
 		// it and exports write it (see policysource), the comparison and
 		// its reversal read the interval by the hours it denotes, and
@@ -230,6 +234,8 @@ func Description() *protocol.Description {
 			LintRules:     migrationlint.Rules(),
 			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, rowdeletion.Models()...),
 			QueryDialect:  queryDialect(),
+			// The facts an offline command plans the engine with.
+			DefaultCapabilities: offlineCapabilities(),
 			Planning: []*protocol.ModelPlanning{{
 				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), ChangeKinds: tableplan.ChangeKinds(), OperationKinds: []string{tableop.Kind},
 			}},
