@@ -11,7 +11,10 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/catalog"
+	"github.com/stokaro/ptah-spanner-plugin/internal/history"
 	"github.com/stokaro/ptah-spanner-plugin/internal/locktable"
+	"github.com/stokaro/ptah-spanner-plugin/internal/metadata"
+	"github.com/stokaro/ptah-spanner-plugin/internal/ownedtable"
 )
 
 // Inspect reads the base tables of the requested schemas, or of the default
@@ -46,10 +49,10 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		Coverage:       &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
 	}
 	for _, table := range tables {
-		if lockTable(table) {
+		if purpose := reservedPurpose(table); purpose != protocol.ReservedObject_PURPOSE_UNSPECIFIED {
 			identity := &protocol.Reference{Engine: engineID, Database: current.database, Schema: table.Schema, Kind: "table", Name: table.Name}
 			snapshot.ReservedObjects = append(snapshot.ReservedObjects, &protocol.ReservedObject{
-				Object: identity, NormalizedObject: proto.CloneOf(identity), Purpose: protocol.ReservedObject_LOCK, ConflictKinds: []string{"table"},
+				Object: identity, NormalizedObject: proto.CloneOf(identity), Purpose: purpose, ConflictKinds: []string{"table"},
 			})
 			continue
 		}
@@ -107,6 +110,30 @@ func observedTable(database string, table catalog.Table) *protocol.Table {
 		result.Indexes = append(result.Indexes, observed)
 	}
 	return result
+}
+
+// reservedPurpose is what the provider keeps in a table a read leaves out of
+// the schema: its lock table, or the revision table, migration log or tag
+// table of Ptah's migrator under their default names and in exactly their
+// layouts. Ptah's built-in Spanner engine left those three names out of every
+// read, so a plan never dropped the record of the migrations a database ran.
+// Any other table is the user's, and is read as one.
+func reservedPurpose(table catalog.Table) protocol.ReservedObject_Purpose {
+	columns := make([]ownedtable.Column, len(table.Columns))
+	for i, column := range table.Columns {
+		columns[i] = ownedtable.Column{Name: column.Name, Type: column.SpannerType, Nullable: column.Nullable}
+	}
+	switch {
+	case lockTable(table):
+		return protocol.ReservedObject_LOCK
+	case table.Name == history.NativeTable && history.Native(table.Schema, table.Name).Holds(columns, table.PrimaryKey):
+		return protocol.ReservedObject_HISTORY
+	case table.Name == metadata.LogTable && metadata.Log(table.Schema, table.Name).Holds(columns, table.PrimaryKey):
+		return protocol.ReservedObject_LOG
+	case table.Name == metadata.TagsTable && metadata.Tags(table.Schema, table.Name).Holds(columns, table.PrimaryKey):
+		return protocol.ReservedObject_TAG
+	}
+	return protocol.ReservedObject_PURPOSE_UNSPECIFIED
 }
 
 // lockTable reports the provider's own lock table: the table locktable makes,

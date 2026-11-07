@@ -34,6 +34,12 @@ const (
 	CreateIndex
 	// DropIndex drops an index.
 	DropIndex
+	// Insert, Update and Delete change rows, and Select reads them. A
+	// migration body holds them beside its schema statements.
+	Insert
+	Update
+	Delete
+	Select
 )
 
 // Statement is one statement of a text.
@@ -50,8 +56,8 @@ type Statement struct {
 }
 
 // ErrUnknownStatement reports a statement the provider does not know.
-var ErrUnknownStatement = errors.New("the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX and " +
-	"ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN or ADD CONSTRAINT only")
+var ErrUnknownStatement = errors.New("the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX, " +
+	"ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN or ADD CONSTRAINT, INSERT, UPDATE, DELETE and SELECT only")
 
 // Split splits a text into statements. Every byte of the text belongs to a
 // statement or is white space between statements: a comment before a
@@ -241,6 +247,9 @@ func classify(text string, start, end int, source []string) (Statement, error) {
 // kindOf reads the statement's leading words. The table name is one name or
 // a schema and a name joined by a dot.
 func kindOf(words []string) (Kind, error) {
+	if kind, found := dataKinds[words[0]]; found && len(words) > 1 {
+		return kind, nil
+	}
 	if len(words) < 3 {
 		return 0, ErrUnknownStatement
 	}
@@ -258,6 +267,10 @@ func kindOf(words []string) (Kind, error) {
 	}
 	return 0, ErrUnknownStatement
 }
+
+// dataKinds are the statements that change or read rows, by their first
+// word.
+var dataKinds = map[string]Kind{"INSERT": Insert, "UPDATE": Update, "DELETE": Delete, "SELECT": Select}
 
 func isSpace(character byte) bool { return strings.IndexByte(" \t\r\n\f\v", character) >= 0 }
 

@@ -35,7 +35,7 @@ func TestExecutionSubprocess(t *testing.T) {
 }
 
 // A unit Spanner refuses applies nothing, the units before it stay applied,
-// and the result names the unit, never its text.
+// and the result names the unit and the server's SQLSTATE, never its text.
 func TestExecutionSubprocess_FailurePath(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -45,9 +45,9 @@ func TestExecutionSubprocess_FailurePath(t *testing.T) {
 		tables     []string
 	}{
 		{name: "the second unit is refused", statements: []string{`CREATE TABLE a (id bigint PRIMARY KEY)`, `CREATE TABLE b (n smallint PRIMARY KEY)`, `CREATE TABLE c (id bigint PRIMARY KEY)`},
-			outcome: protocol.Execution_PARTIAL, wantErr: `provider execution: PARTIAL \(1 units confirmed applied\): Spanner refused unit 2 of 3`, tables: []string{"a"}},
+			outcome: protocol.Execution_PARTIAL, wantErr: `provider execution: PARTIAL \(1 units confirmed applied\): Spanner refused unit 2 of 3 with SQLSTATE P0001`, tables: []string{"a"}},
 		{name: "the first unit is refused", statements: []string{`DROP TABLE missing`},
-			outcome: protocol.Execution_NOT_APPLIED, wantErr: `provider execution: NOT_APPLIED \(0 units confirmed applied\): Spanner refused unit 1 of 1`},
+			outcome: protocol.Execution_NOT_APPLIED, wantErr: `provider execution: NOT_APPLIED \(0 units confirmed applied\): Spanner refused unit 1 of 1 with SQLSTATE P0001`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -72,8 +72,8 @@ func (p *Provider) TryLock(ctx context.Context, request *protocol.LockRequest) (
 	return receipt(ctx, request, record.outcome, ""), nil
 }
 
-// CheckLock proves that the session still holds the lock now and extends its
-// lease, rather than repeating an earlier answer.
+// CheckLock proves that the session still holds the lock now, rather than
+// repeating an earlier answer, and renews a lease with little left.
 func (p *Provider) CheckLock(ctx context.Context, request *protocol.LockRequest) (*protocol.LockResult, error) {
 	current, err := p.lookup(request.GetScope().GetSessionId())
 	if err != nil {
@@ -142,14 +142,15 @@ func (s *session) reserve(scope *protocol.LockScope) (*lockRecord, bool, error) 
 	return record, true, nil
 }
 
-// verify extends the lease of a lock the session holds. When the lease ended,
+// verify checks a lock the session holds, and extends its lease when little
+// of it is left (see locktable.Check). When the lease ended,
 // another holder took the row or the check failed, the session has lost the
 // lock, and it stays fenced. The caller holds lockMu.
 func (s *session) verify(ctx context.Context, lockID string, record *lockRecord) {
 	if record.outcome != protocol.LockResult_ACQUIRED {
 		return
 	}
-	held, err := locktable.Extend(ctx, s.lockConn, record.name, lockID)
+	held, err := locktable.Check(ctx, s.lockConn, record.name, lockID)
 	if s.lost || err != nil || !held {
 		record.outcome, s.lost = protocol.LockResult_LOST, true
 	}
