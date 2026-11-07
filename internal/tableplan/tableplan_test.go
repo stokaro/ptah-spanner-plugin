@@ -319,3 +319,35 @@ func TestPlan_FailurePath(t *testing.T) {
 	c.Assert(err, qt.ErrorMatches, `the request names another planning service`)
 	c.Assert(result, qt.IsNil)
 }
+
+// A created table in a schema of its own follows CREATE SCHEMA IF NOT
+// EXISTS, written once for every table of that schema; a table of the default
+// schema needs none.
+func TestPlan_CreatesTheSchemaOfATable(t *testing.T) {
+	c := testcheck.New(t)
+	inSchema := func(schema, name string) *protocol.ComparisonIdentity {
+		identity := subject(name)
+		identity.Schema = &protocol.ComparisonPart{Source: schema, Normalized: schema}
+		return identity
+	}
+	declared := func(name string) *protocol.DeclaredTable {
+		return &protocol.DeclaredTable{Name: name, Columns: []*protocol.DeclaredColumn{{Name: "id", Type: "bigint", Primary: true}}}
+	}
+	createStep := func(name string, identity *protocol.ComparisonIdentity) *protocol.CommonPlanningStep {
+		return &protocol.CommonPlanningStep{Id: &protocol.StepIdentity{Owner: "ptah.run/provider-common", Name: name}, Parent: identity,
+			Metadata: &protocol.PlanningMetadata{Effects: []*protocol.PlanningEffect{effect(identity, protocol.PlanningEffect_CREATE)}}}
+	}
+	r := request([]*protocol.PlanningTable{
+		{Subject: inSchema("app", "t"), Action: protocol.PlanningTable_CREATE, Desired: declared("t")},
+		{Subject: inSchema("app", "u"), Action: protocol.PlanningTable_CREATE, Desired: declared("u")},
+		{Subject: subject("p"), Action: protocol.PlanningTable_CREATE, Desired: declared("p")},
+	}, createStep("common/000000", inSchema("app", "t")), createStep("common/000001", inSchema("app", "u")), createStep("common/000002", subject("p")))
+	steps, dependencies, _ := plan(c, r)
+	c.Assert(statements(steps), qt.DeepEquals, []string{
+		"CREATE TABLE \"app\".\"t\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
+		`CREATE SCHEMA IF NOT EXISTS "app";`,
+		"CREATE TABLE \"app\".\"u\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
+		"CREATE TABLE \"p\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
+	})
+	c.Assert(dependencies, qt.DeepEquals, [][2]string{{steps[1].Name, steps[0].Name}, {steps[1].Name, steps[2].Name}})
+}

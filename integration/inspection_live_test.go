@@ -76,7 +76,9 @@ func indexKeys(index *protocol.ObservedIndex) []string {
 // order rather than column order, defaults as stored, each index's keys with
 // their direction and NULLS ordering and its STORING columns, and a row
 // deletion policy with the interval in the server's spelling and the column
-// by its name, however the catalog quotes it.
+// by its name, however the catalog quotes it. A table created without a
+// primary key reads as declared: Spanner's hidden key column rowid, and its
+// key, are left out, and a column added later takes the next position.
 func TestInspectionSubprocess(t *testing.T) {
 	c := testcheck.New(t)
 	address := freshDatabase(c)
@@ -88,6 +90,8 @@ func TestInspectionSubprocess(t *testing.T) {
 		`CREATE TABLE plain (id bigint PRIMARY KEY)`,
 		`CREATE TABLE expiring (id bigint PRIMARY KEY, created_at timestamptz) TTL INTERVAL '30 days' ON created_at`,
 		`CREATE TABLE "Mixed" (id bigint PRIMARY KEY, "Seen At" timestamptz) TTL INTERVAL '1 days' ON "Seen At"`,
+		`CREATE TABLE nokey (n bigint)`,
+		`ALTER TABLE nokey ADD COLUMN m varchar(5)`,
 	)
 	client := startProvider(c)
 	session := openSession(c, client, address)
@@ -101,6 +105,7 @@ func TestInspectionSubprocess(t *testing.T) {
 		{Schema: "public", Name: "expiring", Columns: []readColumn{{Name: "id", Type: "bigint", Nullable: "NO", Key: true},
 			{Name: "created_at", Type: "timestamp with time zone", Nullable: "YES"}}, PrimaryKey: []string{"id"},
 			Facets: []string{`github.com/stokaro/ptah-spanner-plugin/row-deletion-policy {"column":"created_at","interval":"4 WEEKS 2 DAYS"}`}},
+		{Schema: "public", Name: "nokey", Columns: []readColumn{{Name: "n", Type: "bigint", Nullable: "YES"}, {Name: "m", Type: "character varying(5)", Nullable: "YES"}}},
 		{
 			Schema: "public", Name: "parent",
 			Columns: []readColumn{
@@ -183,8 +188,6 @@ func TestInspectionSubprocess_FailurePath(t *testing.T) {
 			wantErr: `.*\(FailedPrecondition\): table "public"\."t" has the CHECK constraint "n_ok", which the provider does not describe yet`},
 		{name: "a generated column", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, g bigint GENERATED ALWAYS AS (id * 2) STORED)`},
 			wantErr: `.*\(FailedPrecondition\): column "g" of table "public"\."t" is generated, which the provider does not describe yet`},
-		{name: "a table without a primary key", statements: []string{`CREATE TABLE t (n bigint)`},
-			wantErr: `.*\(FailedPrecondition\): column "rowid" of table "public"\."t" is an identity column, which the provider does not describe yet; .*`},
 		{name: "a filtered index", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, n bigint)`, `CREATE INDEX nf ON t (n) WHERE n IS NOT NULL`},
 			wantErr: `.*\(FailedPrecondition\): index "nf" of table "public"\."t" has a WHERE filter, which the provider does not describe yet`},
 		{name: "an interleaved table", statements: []string{`CREATE TABLE p (id bigint PRIMARY KEY)`,

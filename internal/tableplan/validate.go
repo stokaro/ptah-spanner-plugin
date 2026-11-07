@@ -48,9 +48,6 @@ func validateTable(subject *protocol.ComparisonIdentity, table *protocol.Declare
 		problems = append(problems, unsupported("primary key", name, "the primary key of table %s states INCLUDE, a method or deferral; a Spanner key has none", name))
 	case strings.TrimSpace(table.GetCustomSql()) != "" || len(table.GetTriggers()) > 0:
 		problems = append(problems, unsupported("table", name, "table %s carries custom SQL or a trigger, which Spanner has no place for", name))
-	case len(primaryKey(table)) == 0:
-		problems = append(problems, unsupported("primary key", name,
-			"table %s declares no primary key; Spanner gives such a table a hidden key column, which the provider does not describe", name))
 	}
 	for _, part := range table.GetPrimaryKeyParts() {
 		if part.GetDescending() || part.GetPrefix() != "" {

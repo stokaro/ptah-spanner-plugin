@@ -66,6 +66,8 @@ func TestCapture_HappyPath(t *testing.T) {
 			statement: `ALTER TABLE "app"."t" ALTER TTL INTERVAL '60 days' ON "ts";`, impact: protocol.ChangeSemantics_BEHAVIORAL},
 		{name: "drop a row deletion policy", schema: "public", operation: tableop.Operation{Action: tableop.DropRowDeletion},
 			statement: `ALTER TABLE "t" DROP TTL;`, impact: protocol.ChangeSemantics_ADDITIVE},
+		{name: "create a table's schema", schema: "app", operation: tableop.Operation{Action: tableop.CreateSchema, Name: "app"},
+			statement: `CREATE SCHEMA IF NOT EXISTS "app";`, impact: protocol.ChangeSemantics_ADDITIVE},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

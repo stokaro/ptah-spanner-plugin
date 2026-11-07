@@ -181,6 +181,13 @@ func DropTTL(schema, table string) string {
 	return "ALTER TABLE " + Name(schema, table) + " DROP TTL;"
 }
 
+// CreateSchema writes CREATE SCHEMA IF NOT EXISTS, as Ptah's built-in Spanner
+// engine wrote it before a table in a schema of its own: a plan creates the
+// schema a new table names whether or not an earlier run created it.
+func CreateSchema(name string) string {
+	return "CREATE SCHEMA IF NOT EXISTS " + Quote(name) + ";"
+}
+
 // DropTable writes DROP TABLE. Spanner has one drop mode and refuses CASCADE,
 // so the statement drops the table alone; its indexes have to be dropped
 // first.
