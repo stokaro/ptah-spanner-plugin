@@ -198,7 +198,7 @@ CREATE TABLE y (id bigint PRIMARY KEY, x_id bigint, CONSTRAINT y_x_fk FOREIGN KE
 // `ptah migrations generate` of tables with foreign keys writes a down file
 // that drops every key before the tables, since Spanner refuses to drop a
 // table a key references, as the built-in's down file did; the migration
-// runs up and down. The down file's plan needs a host that reads the
+// runs up, down and up again, and the keys come back with it. The down file's plan needs a host that reads the
 // provider's constraints and predicts the keys the up file adds
 // (stokaro/ptah#4204 S41).
 func TestHostGeneratesMigrationsWithForeignKeysE2E(t *testing.T) {
@@ -226,4 +226,8 @@ func TestHostGeneratesMigrationsWithForeignKeysE2E(t *testing.T) {
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('u', 'p', 'ch', 'x', 'y')`),
 		qt.HasLen, 0)
+
+	output, err = hostCommand(c, "migrations", "up", "--db-url", address, "--migrations-dir", migrations)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(heldForeignKeys(c, address), qt.DeepEquals, []string{"ch ch_p_fk NO ACTION", "x x_y_fk NO ACTION", "y y_x_fk NO ACTION"})
 }
