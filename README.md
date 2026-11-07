@@ -277,12 +277,14 @@ docker run -d --name spanner -p 5432:5432 -p 9020:9020 gcr.io/cloud-spanner-pg-a
 PTAH_SPANNER_TEST_URL='spanner://127.0.0.1:5432/ptah_test?sslmode=disable' \
 PTAH_SPANNER_TEST_INSTANCE_URL=http://127.0.0.1:9020/v1/projects/emulator-project/instances/test-instance \
 PTAH_HOST_TEST_BIN=/path/to/ptah \
+PTAH_HOST_COMPAT_TEST_BIN=/path/to/ptah-compat \
   GOWORK=off go test -tags integration -race -count=1 ./integration
 ```
 
-`PTAH_HOST_TEST_BIN` names a `ptah` binary for the tests that drive the host;
-without it they are skipped. CI builds the newest Ptah release whose contract
-the provider speaks, and Ptah's master branch. A draft pull request that needs
+`PTAH_HOST_TEST_BIN` names a `ptah` binary for the tests that drive the host,
+and `PTAH_HOST_COMPAT_TEST_BIN` a `ptah-compat` binary of the same Ptah;
+without them those tests are skipped. CI builds the newest Ptah release whose
+contract the provider speaks, and Ptah's master branch. A draft pull request that needs
 an unmerged host change names the host branch in `.github/host-ref`, which
 must be removed before the pull request leaves draft.
 

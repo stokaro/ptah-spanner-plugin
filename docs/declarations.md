@@ -236,7 +236,10 @@ These index declarations are refused:
 - a `WHERE` filter (`has a WHERE filter, which the provider does not create yet`);
 - an access method, an operator class, storage parameters, `NULLS NOT DISTINCT`
   or an invisible index, none of which a Spanner index has;
-- a key that is an expression or a column prefix.
+- a key that is an expression or a column prefix;
+- a comment (`has a comment; Spanner's PostgreSQL interface stores no comment`),
+  on a created index and on a kept one: Spanner answers `COMMENT ON INDEX` with
+  `Unknown statement`.
 
 The index Spanner builds for a foreign key, on either table, is Spanner's. A
 read leaves it out, so a plan never drops it and an export never writes it.

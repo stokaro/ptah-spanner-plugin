@@ -168,6 +168,24 @@ func TestValidateSchema_NonKeyTypeInAForeignKey(t *testing.T) {
 	c.Assert(result.GetDiagnostics()[0].GetCode(), qt.Equals, protocol.SchemaDiagnostic_INVALID_SCHEMA)
 }
 
+// An index comment is refused as a table's and a column's are: Spanner's
+// PostgreSQL interface answers COMMENT ON INDEX with `Unknown statement`, so a
+// comment the declaration states could never be read back.
+func TestValidateSchema_AnIndexComment(t *testing.T) {
+	c := testcheck.New(t)
+	request := &protocol.ValidateSchemaRequest{Engine: "spanner", Tables: []*protocol.ValidationTable{{
+		Subject: &protocol.ComparisonIdentity{Kind: "table", Schema: &protocol.ComparisonPart{Source: "public", Normalized: "public"},
+			Name: &protocol.ComparisonPart{Source: "u", Normalized: "u"}},
+		Declaration: &protocol.DeclaredTable{Name: "u", Columns: []*protocol.DeclaredColumn{{Name: "id", Type: "bigint", Primary: true}, {Name: "n", Type: "bigint", Nullable: true}},
+			Indexes: []*protocol.DeclaredIndex{{Name: "u_n_ix", Fields: []string{"n"}, Comment: "first"}}},
+	}}}
+	result, err := backend.New().ValidateSchema(context.Background(), request)
+	c.Assert(err, qt.IsNil)
+	c.Assert(result.GetDiagnostics(), qt.HasLen, 1)
+	c.Assert(result.GetDiagnostics()[0].GetMessage(), qt.Equals, `index "u_n_ix" of table "u" has a comment; Spanner's PostgreSQL interface stores no comment`)
+	c.Assert(result.GetDiagnostics()[0].GetCode(), qt.Equals, protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE)
+}
+
 func TestNormalizeValues_FailurePath(t *testing.T) {
 	c := testcheck.New(t)
 	result, err := backend.New().NormalizeValues(context.Background(), &protocol.NormalizeValuesRequest{Engine: "spanner", Values: []*protocol.ValueInput{

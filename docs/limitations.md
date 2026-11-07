@@ -81,6 +81,7 @@ holds one refused, each naming the object and the contract feature it needs.
 | A row deletion policy with a unit, without whole days, or on a column that is not `timestamptz` | [Row deletion policies](declarations.md#row-deletion-policies) |
 | A materialized view, a view option, `with_check` and a view comment | [Views](declarations.md#views) |
 | A sequence option other than its counter start | [Sequences](declarations.md#sequences) |
+| A comment on an index | [Indexes](declarations.md#indexes) |
 
 Spanner's PostgreSQL interface has no role, grant, row-level security policy,
 stored function or comment, and the provider carries none of them. Ptah refuses

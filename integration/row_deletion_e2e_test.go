@@ -294,3 +294,71 @@ func TestHostRefusesRowDeletionPoliciesE2E(t *testing.T) {
 	c.Assert(output, qt.Contains, "Table.Overrides")
 	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'events'`), qt.HasLen, 0)
 }
+
+// rowsPolicy is a YAML declaration of events, a table with a key and the
+// timestamptz columns named, and the platform group of its row deletion
+// policy when the group is not empty.
+func rowsPolicy(group string, columns ...string) string {
+	var body strings.Builder
+	body.WriteString("tables:\n  events:\n")
+	if group != "" {
+		body.WriteString("    platform:\n      spanner: {" + group + "}\n")
+	}
+	body.WriteString("    columns:\n      id: {type: bigint, primary: true}\n")
+	for _, column := range columns {
+		body.WriteString("      " + column + ": {type: timestamptz}\n")
+	}
+	return body.String()
+}
+
+// A policy walks through each change on a table holding rows: added, given
+// another interval on the same column, moved to a column the same plan adds
+// while the column it counted from is dropped, and removed. Each plan is the
+// statements in the order Spanner takes them: ADD and ALTER are not
+// interchangeable, a policy cannot name a column that does not exist yet, and
+// a column a policy names cannot be dropped. Each step converges and the rows
+// stay.
+func TestHostChangesARowDeletionPolicyOnATableWithRowsE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	output, err := policyApply(c, address, "schema.yaml", rowsPolicy("", "created_at"), apply)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	execSQL(c, address, "INSERT INTO events (id, created_at) VALUES (1, NULL), (2, now())")
+
+	steps := []struct {
+		name, declared, plan, policy string
+	}{
+		{
+			name: "a policy added", declared: rowsPolicy("row_deletion_column: created_at, row_deletion_interval: 30 days", "created_at"),
+			plan:   "-- Row deletion policy on table: events\nALTER TABLE \"events\" ADD TTL INTERVAL '30 days' ON \"created_at\";\n",
+			policy: "INTERVAL '4 WEEKS 2 DAYS' ON created_at",
+		},
+		{
+			name: "another interval", declared: rowsPolicy("row_deletion_column: created_at, row_deletion_interval: 7 days", "created_at"),
+			plan:   "-- Row deletion policy on table: events\nALTER TABLE \"events\" ALTER TTL INTERVAL '7 days' ON \"created_at\";\n",
+			policy: "INTERVAL '7 DAYS' ON created_at",
+		},
+		{
+			name: "another column, added in the same plan, and the old one dropped", declared: rowsPolicy("row_deletion_column: expires_at, row_deletion_interval: 7 days", "expires_at"),
+			plan: "ALTER TABLE \"events\" ADD COLUMN \"expires_at\" timestamptz;\n-- Row deletion policy on table: events\n" +
+				"ALTER TABLE \"events\" ALTER TTL INTERVAL '7 days' ON \"expires_at\";\nALTER TABLE \"events\" DROP COLUMN \"created_at\";\n",
+			policy: "INTERVAL '7 DAYS' ON expires_at",
+		},
+		{
+			name: "no policy", declared: rowsPolicy("", "expires_at"),
+			plan:   "-- Row deletion policy on table: events\nALTER TABLE \"events\" DROP TTL;\n",
+			policy: "<nil>",
+		},
+	}
+	for _, step := range steps {
+		output, err := policyApply(c, address, "schema.yaml", step.declared, apply)
+		c.Assert(err, qt.IsNil, qt.Commentf("step %q: %s", step.name, output))
+		c.Assert(output, qt.Contains, step.plan, qt.Commentf("step %q", step.name))
+		c.Assert(queryRows(c, address, `SELECT row_deletion_policy_expression FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'events'`),
+			qt.DeepEquals, []string{step.policy}, qt.Commentf("step %q", step.name))
+		c.Assert(queryRows(c, address, `SELECT count(*) FROM events`), qt.DeepEquals, []string{"2"}, qt.Commentf("step %q", step.name))
+		output, err = policyApply(c, address, "schema.yaml", step.declared, dryRun)
+		c.Assert(err, qt.IsNil, qt.Commentf("step %q: %s", step.name, output))
+		c.Assert(output, qt.Contains, synced, qt.Commentf("step %q", step.name))
+	}
+}
