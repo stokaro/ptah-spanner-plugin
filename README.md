@@ -59,20 +59,46 @@ is evidence about the PostgreSQL interface, not about the managed service.
 - **Execution.** Spanner refuses a schema statement inside an explicit
   transaction, so each statement commits as it runs. A statement Spanner refuses
   applied nothing and the statements before it stay applied; the result says how
-  many applied. A call that ends while a statement runs reports the outcome as
-  unknown, because Spanner keeps applying a schema change its client stopped
-  waiting for.
-- **Locks.** `ptah schema apply` takes a lock before it reads the target.
-  Spanner has no session lock, so a lock is a row of the table `ptah_locks`,
-  which the provider creates on first use. The row names its holder and the end
-  of a 30-second lease that every check extends. A holder that dies keeps the
-  lock until its lease ends. A read reserves the table, so Ptah never plans its
+  many applied and names the server's SQLSTATE. A call that ends while a
+  statement runs reports the outcome as unknown, because Spanner keeps applying
+  a schema change its client stopped waiting for.
+- **Locks.** `ptah schema apply` and the migration commands take a lock before
+  they read the target. Spanner has no session lock, so a lock is a row of the
+  table `ptah_locks`, which the provider creates on first use. The row names its
+  holder and the end of a 30-second lease. A check reads the row and renews the
+  lease once less than 20 seconds of it are left, so a check every second
+  writes about once in ten seconds: Spanner's emulator runs one read-write
+  transaction at a time, and a write beside another session's open transaction
+  waits for Spanner to abort one of them. A holder that dies keeps the lock
+  until its lease ends. A read reserves the table, so Ptah never plans its
   removal or writes it into an export.
+- **Migrations.** `ptah migrations up`, `down`, `status`, `set`,
+  `repair`, `tag` and `log` keep their records in the tables Ptah's built-in
+  Spanner engine kept them in, in its layouts: the revision table
+  `schema_migrations` (or `atlas_schema_revisions` with `--revision-format
+  atlas`), the log `schema_migrations_log` and the tags `ptah_migration_tags`.
+  A database that engine migrated keeps its history, and a table of one of
+  those names in another layout is refused rather than adopted. The tag table
+  has a `TIMESTAMPTZ` column where the built-in engine wrote `TIMESTAMP`, which
+  Spanner refuses, so `migrations tag` works here where it did not before.
+  - A migration body runs statement by statement. A schema statement runs
+    outside a transaction; a statement that changes or reads rows runs in a
+    serializable transaction together with the revision row's checkpoint. A
+    body that fails part way keeps what ran, and the revision row records that
+    prefix with the same partial checksum the built-in engine recorded.
+    `--tx-mode all` is refused. A statement that controls a transaction or a
+    batch, or changes a session setting, is refused with the whole body before
+    anything runs.
+  - The revision rows are compared and written in Spanner's read-write
+    transactions, which change data only. A read reserves the three tables, so a
+    schema apply never plans their removal.
 
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table
-that holds one is refused), the row deletion policy, views and sequences, and
-versioned migrations. The plan and the measurements behind it are kept with
+that holds one is refused, and `migrations generate` refuses a schema with a
+foreign key, whose down file must drop it first), the row deletion policy, views and sequences, and
+the statements an operator writes, which the `-- +ptah check` assertions of a
+migration run as (a migration that holds one is refused before it runs). The plan and the measurements behind it are kept with
 #4204. Creating a table with a foreign key or a table `CHECK`, and writing a
 read as SQL with `ptah db read`, need a Ptah release with
 [Ptah #5559](https://github.com/stokaro/ptah/pull/5559).

@@ -13,6 +13,9 @@ func Server() runtime.Server {
 		Inspector:       spanner,
 		Renderer:        spanner,
 		Executor:        spanner,
+		Transactions:    spanner,
+		History:         spanner,
+		Metadata:        spanner,
 		SQLAnalyzer:     spanner,
 		ValueNormalizer: spanner,
 		Locks:           spanner,
@@ -21,5 +24,6 @@ func Server() runtime.Server {
 		TableCreations:  spanner,
 		Columns:         spanner,
 		FeaturePlanner:  spanner,
+		MigrationSplits: spanner,
 	}
 }
