@@ -152,6 +152,22 @@ is evidence about the PostgreSQL interface, not about the managed service.
   as an `INSERT` (`SQL002`), and `CREATE INDEX CONCURRENTLY`, which Spanner
   refuses (`CAP001`). A text the provider cannot read, such as one with a
   dollar-quoted string, fails the run with the reason.
+- **Dev databases.** Ptah rehearses a plan on a dev database (`schema apply
+  --dev-url`) and replays a migration directory on one (`migrations generate
+  --replay`), and the provider lists and empties what the dev database holds:
+  change streams, views, foreign keys, indexes, tables (an interleaved table
+  before its parent), sequences, locality groups and, when the whole database
+  is cleaned, every schema but `public`. The lock table stays. The database's
+  DDL, as PGAdapter's `SHOW DATABASE DDL` prints it, is the inventory, so an
+  object of a kind the provider has no statement for, such as a role, stops the
+  cleanup before it drops anything, and so does a table that a foreign key from
+  outside the cleaned schemas references. The provider also judges each
+  replayed statement and refuses a change to a database option, a role or a
+  privilege, and a statement that sets session or transaction state. It
+  provisions no dev database, because a Spanner database is created through the
+  instance's administration API: `--dev-url` names a database that exists (the
+  emulator creates one on the first connection). A dev database needs a Ptah
+  release with [Ptah #5565](https://github.com/stokaro/ptah/pull/5565).
 
 - **Sources.** A table's row deletion policy is declared as Ptah's built-in
   Spanner engine read it: the `platform.spanner.row_deletion_column` and
