@@ -24,13 +24,13 @@ is evidence about the PostgreSQL interface, not about the managed service.
 - **Reads.** A read describes the base tables of the requested schemas, or of
   `public` when the request names none: every column with the type Spanner
   stores, its nullability and its stored default, the primary key in key order,
-  and the secondary indexes with each key's direction and NULLS ordering and
-  their `STORING` columns. The index Spanner builds for a foreign key is
+  the secondary indexes with each key's direction and NULLS ordering and
+  their `STORING` columns, and the row deletion policy with the interval in
+  the spelling Spanner stored. The index Spanner builds for a foreign key is
   Spanner's, not the user's, and is left out.
 - **Refusals instead of omissions.** A read fails, with a reason that names the
   object, when the schema holds something the provider does not describe yet:
-  a view, a foreign key or CHECK constraint, a row deletion policy, a generated
-  or identity column (Spanner adds a hidden `rowid` identity column to a table
+  a view, a foreign key or CHECK constraint, a generated or identity column (Spanner adds a hidden `rowid` identity column to a table
   created without a primary key), a filtered, search or interleaved index, or an
   interleaved table. Ptah plans to create what a read leaves out, so leaving
   such an object out would plan a change the database refuses.
@@ -52,6 +52,14 @@ is evidence about the PostgreSQL interface, not about the managed service.
     default is added nullable and then made `NOT NULL`, because Spanner refuses
     to add it otherwise.
   - A dropped table, and a dropped column, lose their indexes first.
+  - A row deletion policy, `TTL INTERVAL '30 days' ON created_at`, follows
+    `CREATE TABLE`'s column list, and a kept table's policy changes in place
+    with `ADD TTL`, `ALTER TTL` or `DROP TTL`, after the table's column
+    additions and before its column removals. The interval is compared by the
+    days it denotes, because Spanner stores its own spelling (`30 days` reads
+    back as `4 WEEKS 2 DAYS`). A policy on a column that is not `timestamptz`,
+    an interval that is not a whole number of days, and a drop of the column a
+    kept policy counts from are refused before a statement is sent.
   - Spanner cannot change a primary key or the type of a key column, so a plan
     that does either is refused with that reason, as is any other type change
     and a column type Spanner does not have (`smallint`, `timestamp`, `json`,
@@ -151,11 +159,22 @@ is evidence about the PostgreSQL interface, not about the managed service.
   emulator creates one on the first connection). A dev database needs a Ptah
   release with [Ptah #5565](https://github.com/stokaro/ptah/pull/5565).
 
+- **Sources.** A table's row deletion policy is declared as Ptah's built-in
+  Spanner engine read it: the `platform.spanner.row_deletion_column` and
+  `platform.spanner.row_deletion_interval` attributes of a Go
+  `ptah:schema:table` directive, the `spanner` group of a YAML table's
+  `platform` key, or the `override` blocks of an HCL table's
+  `platform "spanner"` block. A Go or YAML table without a policy declares
+  none; an HCL table without the block leaves the policy it holds alone. An
+  export writes the policy back in the same spelling, and `ptah schema stats`
+  counts the tables that hold one. A SQL schema document's `TTL` clause is
+  refused: Ptah does not hand a provider a table clause of a SQL document yet.
+
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table
 that holds one is refused, and `migrations generate` refuses a schema with a
-foreign key, whose down file must drop it first), the row deletion policy,
-and views and sequences. The plan and the measurements behind it are kept with
+foreign key, whose down file must drop it first), and views and sequences. The
+plan and the measurements behind it are kept with
 #4204. Creating a table with a foreign key or a table `CHECK`, and writing a
 read as SQL with `ptah db read`, need a Ptah release with
 [Ptah #5559](https://github.com/stokaro/ptah/pull/5559).

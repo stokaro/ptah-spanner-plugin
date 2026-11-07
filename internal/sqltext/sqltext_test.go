@@ -69,6 +69,15 @@ func TestSplit_HappyPath(t *testing.T) {
 			},
 		},
 		{
+			name: "the row deletion policy statements the provider renders",
+			text: "ALTER TABLE \"t\" ADD TTL INTERVAL '7 days' ON \"ts\";\nALTER TABLE \"app\".\"t\" ALTER TTL INTERVAL '60 days' ON \"ts\";\nALTER TABLE \"t\" DROP TTL;",
+			want: []span{
+				{Start: 0, End: 50, Line: 1, Kind: sqltext.SetRowDeletion, Words: []string{"ALTER", "TABLE", `"t"`, "ADD", "TTL", "INTERVAL", "'7 days'", "ON", `"ts"`}},
+				{Start: 51, End: 110, Line: 2, Kind: sqltext.SetRowDeletion, Words: []string{"ALTER", "TABLE", `"app"`, ".", `"t"`, "ALTER", "TTL", "INTERVAL", "'60 days'", "ON", `"ts"`}},
+				{Start: 111, End: 136, Line: 3, Kind: sqltext.DropRowDeletion, Words: []string{"ALTER", "TABLE", `"t"`, "DROP", "TTL"}},
+			},
+		},
+		{
 			name: "the data statements of a migration body",
 			text: "INSERT INTO t VALUES (1);\nupdate t set a = 2;\nDELETE FROM t;\nSELECT 1;",
 			want: []span{
@@ -99,7 +108,7 @@ func TestSplit_FailurePath(t *testing.T) {
 		name, text, wantErr string
 	}{
 		{name: "a view", text: "CREATE VIEW v AS SELECT 1;", wantErr: `the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX, ` +
-			`ALTER TABLE \.\.\. ADD COLUMN, DROP COLUMN, ALTER COLUMN or ADD CONSTRAINT, INSERT, UPDATE, DELETE and SELECT only`},
+			`ALTER TABLE \.\.\. ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL, INSERT, UPDATE, DELETE and SELECT only`},
 		{name: "a data word alone", text: "DELETE;", wantErr: `the provider analyzes .*`},
 		{name: "an ALTER TABLE of another kind", text: "ALTER TABLE t RENAME TO u;", wantErr: `the provider analyzes .*`},
 		{name: "a short statement", text: "DROP INDEX;", wantErr: `the provider analyzes .*`},

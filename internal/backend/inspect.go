@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
@@ -15,12 +16,14 @@ import (
 	"github.com/stokaro/ptah-spanner-plugin/internal/locktable"
 	"github.com/stokaro/ptah-spanner-plugin/internal/metadata"
 	"github.com/stokaro/ptah-spanner-plugin/internal/ownedtable"
+	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 )
 
 // Inspect reads the base tables of the requested schemas, or of the default
-// schema when the request names none, with their columns, primary keys and
-// secondary indexes. The snapshot is complete or the call fails: an object
-// the provider does not describe yet fails the read with a reason.
+// schema when the request names none, with their columns, primary keys,
+// secondary indexes and row deletion policies. The snapshot is complete or
+// the call fails: an object the provider does not describe yet fails the read
+// with a reason.
 func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest) (*protocol.Schema, error) {
 	current, err := p.lookup(request.GetSessionId())
 	if err != nil {
@@ -48,6 +51,7 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		TargetFeatures: negotiatedFeatures(ctx),
 		Coverage:       &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
 	}
+	snapshot.Coverage.Kinds = []*protocol.ModelKindCoverage{policyCoverage(current.database, request.GetSchemas())}
 	for _, table := range tables {
 		if purpose := reservedPurpose(table); purpose != protocol.ReservedObject_PURPOSE_UNSPECIFIED {
 			identity := &protocol.Reference{Engine: engineID, Database: current.database, Schema: table.Schema, Kind: "table", Name: table.Name}
@@ -56,7 +60,18 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 			})
 			continue
 		}
-		snapshot.Tables = append(snapshot.Tables, observedTable(current.database, table))
+		observed := observedTable(current.database, table)
+		if table.RowDeletion != nil {
+			facet, err := rowdeletion.Facet("policy."+table.Schema+"."+table.Name, protocol.ValueInput_OBSERVED, proto.CloneOf(observed.GetIdentity()), *table.RowDeletion)
+			if err != nil {
+				return nil, runtime.ErrorWithReason(codes.FailedPrecondition, fmt.Sprintf("table %s: %v", qualifiedName(table), err))
+			}
+			observed.Facets = append(observed.Facets, facet.GetValue())
+			snapshot.Coverage.Subjects = append(snapshot.Coverage.Subjects, &protocol.ModelSubjectCoverage{Kind: rowdeletion.Kind,
+				Subject: proto.CloneOf(observed.GetIdentity()), NormalizedSubject: proto.CloneOf(observed.GetNormalizedIdentity()),
+				Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE}})
+		}
+		snapshot.Tables = append(snapshot.Tables, observed)
 	}
 	// A read narrowed to schemas says which namespace each selector names.
 	for _, selector := range request.GetSchemas() {
@@ -150,4 +165,31 @@ func lockTable(table catalog.Table) bool {
 		}
 	}
 	return true
+}
+
+// policyCoverage says what the read knows of row deletion policies: every
+// table's, so a table without a policy holds none. A read narrowed to schemas
+// knows them inside those schemas alone.
+func policyCoverage(database string, schemas []string) *protocol.ModelKindCoverage {
+	coverage := &protocol.ModelKindCoverage{Model: rowdeletion.ObservedModel(), Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE}}
+	if len(schemas) == 0 {
+		return coverage
+	}
+	coverage.Knowledge = &protocol.ModelKnowledge{State: protocol.ModelKnowledge_UNINSPECTED, Reason: "The read covers the selected schemas only"}
+	for _, schema := range slices.Compact(slices.Sorted(slices.Values(schemas))) {
+		coverage.Regions = append(coverage.Regions, &protocol.ModelNamespaceKnowledge{
+			Scope: &protocol.ModelNamespace{
+				Database: &protocol.NamespaceComponent{Source: database, Normalized: database},
+				Catalog:  &protocol.NamespaceComponent{},
+				Schema:   &protocol.NamespaceComponent{Source: schema, Normalized: schema},
+			},
+			Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE},
+		})
+	}
+	return coverage
+}
+
+// qualifiedName names a read table for a reason.
+func qualifiedName(table catalog.Table) string {
+	return fmt.Sprintf("%q.%q", table.Schema, table.Name)
 }

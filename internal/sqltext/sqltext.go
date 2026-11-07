@@ -34,6 +34,12 @@ const (
 	CreateIndex
 	// DropIndex drops an index.
 	DropIndex
+	// SetRowDeletion gives a table a row deletion policy or replaces it:
+	// ALTER TABLE ... ADD TTL or ALTER TTL.
+	SetRowDeletion
+	// DropRowDeletion removes a table's row deletion policy: ALTER TABLE ...
+	// DROP TTL.
+	DropRowDeletion
 	// Insert, Update and Delete change rows, and Select reads them. A
 	// migration body holds them beside its schema statements.
 	Insert
@@ -57,7 +63,7 @@ type Statement struct {
 
 // ErrUnknownStatement reports a statement the provider does not know.
 var ErrUnknownStatement = errors.New("the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX, " +
-	"ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN or ADD CONSTRAINT, INSERT, UPDATE, DELETE and SELECT only")
+	"ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL, INSERT, UPDATE, DELETE and SELECT only")
 
 // Split splits a text into statements. Every byte of the text belongs to a
 // statement or is white space between statements: a comment before a
@@ -128,10 +134,15 @@ func alterKind(rest []string) (Kind, error) {
 	if len(rest) >= 2 && rest[0] == "." {
 		rest = rest[2:]
 	}
+	if len(rest) == 2 && rest[0] == "DROP" && rest[1] == "TTL" {
+		return DropRowDeletion, nil
+	}
 	if len(rest) < 3 {
 		return 0, ErrUnknownStatement
 	}
 	switch rest[0] + " " + rest[1] {
+	case "ADD TTL", "ALTER TTL":
+		return SetRowDeletion, nil
 	case "ADD COLUMN":
 		return AddColumn, nil
 	case "DROP COLUMN":
