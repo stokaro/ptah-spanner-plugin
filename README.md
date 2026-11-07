@@ -236,7 +236,15 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   with Spanner's clause after the column list, `TTL INTERVAL '30 days' ON
   created_at`, which the provider claims and reads (provider contract 25.29);
   a table without the clause has none, and the SQL that `ptah db read` writes
-  replays. An older Ptah refuses the clause.
+  replays. An older Ptah refuses the clause. The engine also states that
+  Spanner runs `DROP VIEW IF EXISTS` of a name a table holds and ignores it,
+  so Ptah reads a schema document that writes one as the server runs it
+  (provider contract 25.33); an older Ptah refuses such a document.
+- **Rendering.** `ptah schema render --dialect spanner` writes a schema's
+  statements without a database. A column declared `integer` or `int` keeps
+  that spelling, and Spanner stores a `bigint` without the 32-bit range; a
+  render reports this as an omission to a Ptah of provider contract 25.33,
+  with the `CHECK` that keeps the range.
 
 Creating a table with a foreign key or a table `CHECK`, and writing a read as
 SQL with `ptah db read`, need a Ptah release with
@@ -279,7 +287,7 @@ ptah schema apply --db-url 'spanner://localhost:5432/app?sslmode=disable' \
 ## Build and test
 
 The module pins the published SDK, `github.com/stokaro/ptah/provider-sdk`, by
-tag: v0.29.0, which speaks provider contract 25.31. It needs neither the Ptah
+tag: v0.31.0, which speaks provider contract 25.33. It needs neither the Ptah
 source nor a local SDK checkout and has no `replace` directive. The provider
 starts on a Ptah of contract 25.27 or a later minor of 25, and serves an older
 minor without the additions it does not list;

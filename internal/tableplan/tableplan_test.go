@@ -170,6 +170,52 @@ func TestPlan_CreatesForeignKeysAfterBothTables(t *testing.T) {
 	})
 }
 
+// unqualified is a table identity without a schema, as the host builds one
+// for an offline render, which has no session to read the search path from.
+func unqualified(name string) *protocol.ComparisonIdentity {
+	identity := subject(name)
+	identity.Schema = &protocol.ComparisonPart{}
+	return identity
+}
+
+// unqualifiedCreation is the host's step that creates table, named without a
+// schema.
+func unqualifiedCreation(name, table string) *protocol.CommonPlanningStep {
+	step := common(name, table, effect(unqualified(table), protocol.PlanningEffect_CREATE))
+	step.Parent = unqualified(table)
+	return step
+}
+
+// A table an offline render names without a schema is a table of the default
+// schema: its creation, its index and its foreign key are planned as for a
+// table of public, and each operation names public as its table's schema.
+func TestPlan_PlansATableWithoutASchemaInTheDefaultSchema(t *testing.T) {
+	c := testcheck.New(t)
+	parent := &protocol.DeclaredTable{Name: "p", Columns: []*protocol.DeclaredColumn{{Name: "id", Type: "bigint", Primary: true}},
+		Indexes: []*protocol.DeclaredIndex{{Name: "p_id_idx", Fields: []string{"id"}}}}
+	children := &protocol.DeclaredTable{Name: "ch", Columns: []*protocol.DeclaredColumn{
+		{Name: "id", Type: "bigint", Primary: true}, {Name: "p_id", Type: "bigint", Nullable: true},
+	}, Constraints: []*protocol.DeclaredConstraint{{Name: "ch_p_fk", Type: "FOREIGN KEY", Columns: []string{"p_id"}, ForeignTable: "p", ForeignColumns: []string{"id"}}}}
+	r := request([]*protocol.PlanningTable{
+		{Subject: unqualified("p"), Action: protocol.PlanningTable_CREATE, Desired: parent},
+		{Subject: unqualified("ch"), Action: protocol.PlanningTable_CREATE, Desired: children},
+	}, unqualifiedCreation("common/000000", "p"), unqualifiedCreation("common/000001", "ch"))
+	steps, _, result := plan(c, r)
+	c.Assert(statements(steps), qt.DeepEquals, []string{
+		"CREATE TABLE \"p\" (\n  \"id\" bigint PRIMARY KEY NOT NULL\n);",
+		`CREATE INDEX "p_id_idx" ON "p" ("id");`,
+		"CREATE TABLE \"ch\" (\n  \"id\" bigint PRIMARY KEY NOT NULL,\n  \"p_id\" bigint\n);",
+		`ALTER TABLE "ch" ADD CONSTRAINT "ch_p_fk" FOREIGN KEY ("p_id") REFERENCES "p"("id");`,
+	})
+	var schemas []string
+	for _, contribution := range result.GetContributions() {
+		for _, step := range contribution.GetSteps() {
+			schemas = append(schemas, step.GetOperation().GetValue().GetValue().GetOwner().GetSchema())
+		}
+	}
+	c.Assert(schemas, qt.DeepEquals, []string{"public", "public", "public", "public"})
+}
+
 // altered is a kept table t whose held side has columns a..e and the index
 // t_old, and whose declaration is desired.
 func altered(desired []*protocol.DeclaredColumn, indexes ...*protocol.DeclaredIndex) *protocol.PlanningTable {

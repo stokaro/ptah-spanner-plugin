@@ -6,6 +6,7 @@ import (
 
 	qt "github.com/frankban/quicktest"
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -55,6 +56,67 @@ func TestRender_HappyPath(t *testing.T) {
 		`CREATE INDEX "users_email" ON "users" ("email");`,
 		`DROP TABLE "old";`,
 	})
+}
+
+// omissionChanges create table users with an integer, an int array and a
+// bigint column, add an int column to it, and create app.q with an integer
+// key.
+func omissionChanges(c *qt.C) []*protocol.Change {
+	c.Helper()
+	change := func(id, schema, table string, role protocol.NativeOperation_Role, operation tableop.Operation) *protocol.Change {
+		owner := tableop.Owner(schema, table)
+		value, err := tableop.Capture(id, owner, operation)
+		c.Assert(err, qt.IsNil)
+		native := &protocol.NativeOperation{Value: value, Role: role}
+		if role == protocol.NativeOperation_ALTER_TABLE {
+			native.Parent = tableop.Owner(schema, table)
+		}
+		return &protocol.Change{Id: id, Object: owner, Operation: &protocol.Change_Native{Native: native}}
+	}
+	return []*protocol.Change{
+		change("1", "public", "users", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.CreateTable, PrimaryKey: []string{"id"},
+			Columns: []tableop.Column{{Name: "id", Type: "bigint"}, {Name: "age", Type: "integer", Nullable: true}, {Name: "scores", Type: "int[]", Nullable: true}}}),
+		change("2", "public", "users", protocol.NativeOperation_ALTER_TABLE, tableop.Operation{Action: tableop.AddColumn,
+			Column: &tableop.Column{Name: "rank", Type: "int", Nullable: true}}),
+		change("3", "app", "q", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.CreateTable, PrimaryKey: []string{"id"},
+			Columns: []tableop.Column{{Name: "id", Type: "INTEGER"}}}),
+	}
+}
+
+// Spanner stores PostgreSQL's 32-bit integer as bigint. The statement keeps
+// the declared type, and a host that lists render.omissions is told that the
+// range is lost, column by column, with the CHECK that keeps it for a scalar.
+// A host that does not list the feature gets the same statements and no
+// omission.
+func TestRender_ReportsWhatSpannerLeavesOut(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	request := &protocol.RenderRequest{Engine: "spanner", TargetFeatures: description.GetEngines()[0].GetFeatures(), Changes: omissionChanges(c)}
+	result, err := backend.New().Render(context.Background(), request)
+	c.Assert(err, qt.IsNil)
+	c.Assert(provider.ValidateRenderedBatch(description, request, result), qt.IsNil)
+	c.Assert(result.GetUnits(), qt.HasLen, 3)
+	c.Assert(result.GetUnits()[1].GetSql(), qt.Equals, `ALTER TABLE "users" ADD COLUMN "rank" int;`)
+	type omission struct{ Reason, Kind, Name, Property, Detail, Remedy string }
+	var omissions []omission
+	for _, o := range result.GetOmissions() {
+		omissions = append(omissions, omission{o.GetReason(), o.GetKind(), o.GetName(), o.GetProperty(), o.GetDetail(), o.GetRemedy()})
+	}
+	c.Assert(omissions, qt.DeepEquals, []omission{
+		{"unsupported", "column", "users.age", "type", "integer: the 32-bit range; Spanner stores bigint",
+			`a CHECK ("age" BETWEEN -2147483648 AND 2147483647) keeps the range`},
+		{"unsupported", "column", "users.scores", "type", "int[]: the 32-bit range; Spanner stores bigint", ""},
+		{"unsupported", "column", "users.rank", "type", "int: the 32-bit range; Spanner stores bigint",
+			`a CHECK ("rank" BETWEEN -2147483648 AND 2147483647) keeps the range`},
+		{"unsupported", "column", "app.q.id", "type", "integer: the 32-bit range; Spanner stores bigint",
+			`a CHECK ("id" BETWEEN -2147483648 AND 2147483647) keeps the range`},
+	})
+
+	unlisted := &protocol.RenderRequest{Engine: "spanner", Changes: omissionChanges(c)}
+	result, err = backend.New().Render(context.Background(), unlisted)
+	c.Assert(err, qt.IsNil)
+	c.Assert(result.GetUnits(), qt.HasLen, 3)
+	c.Assert(result.GetOmissions(), qt.HasLen, 0)
 }
 
 // A change the provider cannot write refuses the whole batch, so the host

@@ -129,6 +129,14 @@ reports.
 | `spanner.commit_timestamp` | `spanner.commit_timestamp` |
 | Any of these followed by `[]` | An array of that type |
 
+A column declared `int` or `integer` keeps that spelling in the statement, and
+Spanner stores a `bigint`: the column takes values outside the 32-bit range of
+PostgreSQL's `integer`. A Ptah of provider contract 25.33 receives this as an
+omission of the render, which Ptah's Go API returns with the statements
+(`engine.Runtime.RenderSchema`) and which a caller that must not lose a
+declaration refuses. A `CHECK (c BETWEEN -2147483648 AND 2147483647)` keeps the
+range.
+
 These types are refused before a statement is sent, with the reason in the
 right column:
 

@@ -271,6 +271,35 @@ func skipBeforeConstraints(c *qt.C) {
 	}
 }
 
+// statementFactsCommit is the commit time, as a pseudo-version writes it, of
+// stokaro/ptah 64dc845e9, which added contract 25.33 to provider-sdk. A
+// provider-sdk pseudo-version on v0.30.0 at or after it speaks 25.33, as does
+// provider-sdk/v0.31.0 and every later release.
+const statementFactsCommit = "20261107163439"
+
+// hostPredatesStatementFacts reports whether the host pins a provider-sdk
+// older than contract 25.33, whose source.sql-statement-facts lets the host
+// read a SQL schema document as the provider's engine runs it. A host that
+// replaces the module builds it from its own tree and is not older.
+func hostPredatesStatementFacts(c *qt.C) bool {
+	c.Helper()
+	host, _ := hostManifest(c)
+	info, err := buildinfo.ReadFile(host)
+	c.Assert(err, qt.IsNil)
+	for _, dependency := range info.Deps {
+		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+			continue
+		}
+		var major, minor, patch int
+		if _, err := fmt.Sscanf(dependency.Version, "v%d.%d.%d", &major, &minor, &patch); err != nil || major != 0 {
+			return false
+		}
+		_, pseudo, _ := strings.Cut(dependency.Version, "-0.")
+		return minor < 30 || minor == 30 && (patch == 0 || pseudo < statementFactsCommit)
+	}
+	return false
+}
+
 // queryRows runs a catalog query on the database address names and returns
 // each row as its fields' text joined by spaces.
 func queryRows(c *qt.C, address, query string) []string {

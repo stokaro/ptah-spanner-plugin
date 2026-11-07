@@ -192,3 +192,25 @@ func TestDescription_StatesTheEnumColumnForm(t *testing.T) {
 	c.Assert(unlisted.GetEngines()[0].GetEnumColumns(), qt.IsNil)
 	c.Assert(unlisted.GetEngines()[0].GetFeatures(), qt.Not(qt.Contains), provider.EnumColumnsFeature)
 }
+
+// The engine states that Spanner ignores DROP VIEW IF EXISTS of a name a
+// table holds, so the host reads a schema document as the server runs it. A
+// host that does not list source.sql-statement-facts reads the fact as
+// false, and refuses such a document, as it does for a server that refuses
+// the statement.
+func TestDescription_StatesTheStatementFactsOfSpanner(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	c.Assert(description.GetFeatures(), qt.Contains, provider.SQLStatementFactsFeature)
+	listed := provider.NegotiatedDescription(description, description.GetFeatures())
+	c.Assert(provider.ValidateDescription(listed, nil), qt.IsNil)
+	engine := listed.GetEngines()[0]
+	c.Assert(engine.GetFeatures(), qt.Contains, provider.SQLStatementFactsFeature)
+	c.Assert(engine.GetSqlSchema().GetMode(), qt.Equals, protocol.SQLSchemaDeclaration_FRAGMENTS)
+	c.Assert(engine.GetSqlSchema().GetDropViewIfExistsSkipsOtherKinds(), qt.IsTrue)
+
+	unlisted := provider.NegotiatedDescription(description, nil)
+	c.Assert(provider.ValidateDescription(unlisted, nil), qt.IsNil)
+	c.Assert(unlisted.GetEngines()[0].GetFeatures(), qt.Not(qt.Contains), provider.SQLStatementFactsFeature)
+	c.Assert(unlisted.GetEngines()[0].GetSqlSchema().GetDropViewIfExistsSkipsOtherKinds(), qt.IsFalse)
+}
