@@ -8,7 +8,6 @@ require (
 	github.com/frankban/quicktest v1.14.6
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/stokaro/ptah/provider-sdk v0.29.0
-	golang.org/x/mod v0.41.0
 	google.golang.org/grpc v1.86.0-dev
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
@@ -32,6 +31,7 @@ require (
 	github.com/oklog/run v1.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/stokaro/teststyle v0.2.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect

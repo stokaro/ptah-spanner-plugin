@@ -4,11 +4,11 @@ package integration_test
 
 import (
 	"debug/buildinfo"
+	"fmt"
 	"path/filepath"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
-	"golang.org/x/mod/semver"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
 )
@@ -27,7 +27,11 @@ func skipBeforeEnumColumns(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path == "github.com/stokaro/ptah/provider-sdk" && dependency.Replace == nil && semver.Compare(dependency.Version, "v0.28.1-0") < 0 {
+		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+			continue
+		}
+		var major, minor int
+		if _, err := fmt.Sscanf(dependency.Version, "v%d.%d.", &major, &minor); err == nil && major == 0 && (minor < 28 || dependency.Version == "v0.28.0") {
 			c.Skipf("the host pins provider-sdk %s, which predates contract 25.31", dependency.Version)
 		}
 	}

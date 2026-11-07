@@ -74,27 +74,6 @@ func TestDescription_ReadsAndPlansConstraints(t *testing.T) {
 	}
 }
 
-// The engine states how it builds an enum column, the form Ptah's built-in
-// Spanner engine used: TEXT under a CHECK that lists the values. A host that
-// does not list schema.enum-columns receives no form, and keeps the enum a
-// type of its own.
-func TestDescription_StatesTheEnumColumnForm(t *testing.T) {
-	c := testcheck.New(t)
-	description := backend.Description()
-	c.Assert(description.GetFeatures(), qt.Contains, provider.EnumColumnsFeature)
-	listed := provider.NegotiatedDescription(description, description.GetFeatures())
-	c.Assert(provider.ValidateDescription(listed, nil), qt.IsNil)
-	engine := listed.GetEngines()[0]
-	c.Assert(engine.GetFeatures(), qt.Contains, provider.EnumColumnsFeature)
-	c.Assert(engine.GetEnumColumns().GetForm(), qt.Equals, protocol.EnumColumns_CHECK)
-	c.Assert(engine.GetEnumColumns().GetCheckType(), qt.Equals, "TEXT")
-
-	unlisted := provider.NegotiatedDescription(description, nil)
-	c.Assert(provider.ValidateDescription(unlisted, nil), qt.IsNil)
-	c.Assert(unlisted.GetEngines()[0].GetEnumColumns(), qt.IsNil)
-	c.Assert(unlisted.GetEngines()[0].GetFeatures(), qt.Not(qt.Contains), provider.EnumColumnsFeature)
-}
-
 // Migrations keep their records through the provider: revision history, the
 // log and tags, transactions for the records, and a split of each body into
 // the statements Spanner runs one by one.
@@ -155,4 +134,25 @@ func TestDescription_TheProviderCleansDevDatabases(t *testing.T) {
 		c.Assert(description.GetFeatures(), qt.Contains, feature)
 	}
 	c.Assert(description.GetFeatures(), qt.Not(qt.Contains), provider.DevDatabaseFeature)
+}
+
+// The engine states how it builds an enum column, the form Ptah's built-in
+// Spanner engine used: TEXT under a CHECK that lists the values. A host that
+// does not list schema.enum-columns receives no form, and keeps the enum a
+// type of its own.
+func TestDescription_StatesTheEnumColumnForm(t *testing.T) {
+	c := testcheck.New(t)
+	description := backend.Description()
+	c.Assert(description.GetFeatures(), qt.Contains, provider.EnumColumnsFeature)
+	listed := provider.NegotiatedDescription(description, description.GetFeatures())
+	c.Assert(provider.ValidateDescription(listed, nil), qt.IsNil)
+	engine := listed.GetEngines()[0]
+	c.Assert(engine.GetFeatures(), qt.Contains, provider.EnumColumnsFeature)
+	c.Assert(engine.GetEnumColumns().GetForm(), qt.Equals, protocol.EnumColumns_CHECK)
+	c.Assert(engine.GetEnumColumns().GetCheckType(), qt.Equals, "TEXT")
+
+	unlisted := provider.NegotiatedDescription(description, nil)
+	c.Assert(provider.ValidateDescription(unlisted, nil), qt.IsNil)
+	c.Assert(unlisted.GetEngines()[0].GetEnumColumns(), qt.IsNil)
+	c.Assert(unlisted.GetEngines()[0].GetFeatures(), qt.Not(qt.Contains), provider.EnumColumnsFeature)
 }

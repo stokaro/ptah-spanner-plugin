@@ -114,10 +114,6 @@ func providerFeatures() []string {
 		// ddl.IndexKey.StatedNulls.
 		provider.ObservedConstraintsFeature,
 		provider.IndexNullsOrderFeature,
-		// The engine states how it builds an enum column: TEXT under a
-		// CHECK that lists the values, as Ptah's built-in Spanner engine
-		// built it; see enumColumns.
-		provider.EnumColumnsFeature,
 		// The provider owns the lifecycle of the engine's tables: it checks a
 		// declaration, states its key columns, predicts what a creation holds,
 		// judges columns in Spanner's spelling, and plans every statement
@@ -133,6 +129,10 @@ func providerFeatures() []string {
 		// A changed primary key reaches the planning service, which refuses
 		// it by name: Spanner cannot change a table's key.
 		provider.PrimaryKeyChangesFeature,
+		// The engine states how it builds an enum column: TEXT under a
+		// CHECK that lists the values, as Ptah's built-in Spanner engine
+		// built it; see enumColumns.
+		provider.EnumColumnsFeature,
 		// A kept table's changed foreign keys and CHECKs reach the planning
 		// service, which drops and adds them, and the host asks the provider
 		// whether a declared CHECK and the one Spanner keeps are one; see
@@ -229,6 +229,7 @@ func Description() *protocol.Description {
 			Aliases:       aliases(),
 			DefaultSchema: defaultSchema,
 			Identifiers:   identifierRules(),
+			EnumColumns:   enumColumns(),
 			ReleaseLines:  releaseLines(),
 			Features:      engineFeatures(),
 			LintRules:     migrationlint.Rules(),
@@ -244,7 +245,6 @@ func Description() *protocol.Description {
 			GoSourceDirectives: policysource.GoDirectives(),
 			HclSource:          &protocol.HCLSourceDeclaration{Blocks: []*protocol.HCLSourceBlock{policysource.HCLPlatformBlock()}},
 			CommonObjects:      commonobject.Support(),
-			EnumColumns:        enumColumns(),
 		}},
 	}
 }
