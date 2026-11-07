@@ -40,13 +40,21 @@ is evidence about the PostgreSQL interface, not about the managed service.
   stores. A sequence that skips a range is refused by the read.
 - **Refusals instead of omissions.** A read fails, with a reason that names the
   object, when the schema holds something the provider does not describe yet:
-  a foreign key or CHECK constraint, a generated or identity column (Spanner adds a hidden `rowid` identity column to a table
-  created without a primary key), a filtered, search or interleaved index, or an
-  interleaved table. Ptah plans to create what a read leaves out, so leaving
-  such an object out would plan a change the database refuses.
+  a foreign key or CHECK constraint, a generated or identity column, a
+  filtered, search or interleaved index, or an interleaved table. Ptah plans
+  to create what a read leaves out, so leaving such an object out would plan a
+  change the database refuses.
+- **Tables without a primary key.** Spanner keys a table created without a
+  primary key on a hidden column `rowid` of its own. A read leaves that column
+  and its key out, so the table reads as declared and converges.
 - **Plans.** The provider owns the lifecycle of the engine's tables: Ptah hands
   it every table a plan creates, changes or drops, and it plans each statement
   itself, one action per statement as Spanner runs them.
+  - A table in a schema other than `public` follows `CREATE SCHEMA IF NOT
+    EXISTS`, written once per schema a plan creates tables in, as a YAML
+    source names the schema. A SQL or HCL source that declares a schema other
+    than `public` is refused by Ptah before the provider plans anything: the
+    host does not hand a provider a schema to create yet.
   - A created table is one `CREATE TABLE` with its key in key order, its
     defaults and its column `CHECK` constraints (an enum column is `TEXT` under
     a `CHECK` that lists its values), followed by its indexes and then by each

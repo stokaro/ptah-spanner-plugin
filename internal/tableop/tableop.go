@@ -65,6 +65,9 @@ const (
 	AddRowDeletion   Action = "add-row-deletion"
 	AlterRowDeletion Action = "alter-row-deletion"
 	DropRowDeletion  Action = "drop-row-deletion"
+	// CreateSchema creates the schema a created table names, unless it
+	// exists.
+	CreateSchema Action = "create-schema"
 )
 
 // Operation is one action on the table its envelope names. Each action reads
@@ -154,13 +157,14 @@ func buildModel() *protocol.ValueModel {
 		"kind": Kind, "representation": "operation", "schema_version": schemaVersion, "encoding": encoding,
 		"owner": "the table the statement changes: engine spanner, kind table, its schema and its name; no database, catalog or path",
 		"actions": []Action{CreateTable, DropTable, AddColumn, DropColumn, AlterColumnType, SetDefault, DropDefault, SetNotNull, DropNotNull,
-			CreateIndex, DropIndex, AddForeignKey, AddCheck, AddRowDeletion, AlterRowDeletion, DropRowDeletion},
+			CreateIndex, DropIndex, AddForeignKey, AddCheck, AddRowDeletion, AlterRowDeletion, DropRowDeletion, CreateSchema},
 		"fields": map[string]string{
 			"action":     "required; one schema statement of Spanner's PostgreSQL interface",
 			"columns":    "create-table: every column in order, each with name, type as declared, nullable, an optional default as SQL and an optional named check",
 			"primaryKey": "create-table: the key columns in key order",
 			"column":     "add-column: one column, nullable or with a default and without a check",
-			"name":       "the column an alter, drop-column or drop-default names, the index a drop-index drops, the constraint an add-check adds",
+			"name": "the column an alter, drop-column or drop-default names, the index a drop-index drops, the constraint an add-check adds, " +
+				"the schema a create-schema creates",
 			"type":       "alter-column-type: the type as declared; Spanner changes a type only between character varying and bytea",
 			"default":    "set-default: the SQL that follows DEFAULT",
 			"expression": "add-check: the condition",
@@ -288,6 +292,7 @@ var fields = map[Action][]string{
 	AddRowDeletion:   {"rowDeletion"},
 	AlterRowDeletion: {"rowDeletion"},
 	DropRowDeletion:  {},
+	CreateSchema:     {"name"},
 }
 
 // present lists the operands an operation sets.
@@ -383,6 +388,8 @@ func (o Operation) namedStatement(schema, table string) (string, error) {
 		return ddl.DropNotNull(schema, table, o.Name), nil
 	case DropIndex:
 		return ddl.DropIndex(schema, o.Name), nil
+	case CreateSchema:
+		return ddl.CreateSchema(o.Name), nil
 	default:
 		return ddl.AddCheck(schema, table, o.Name, o.Expression)
 	}
@@ -412,6 +419,8 @@ func (o Operation) impact() (protocol.ChangeSemantics_Impact, string) {
 		return protocol.ChangeSemantics_ADDITIVE, "Drops an index; no row changes"
 	case CreateTable:
 		return protocol.ChangeSemantics_ADDITIVE, "Creates a table"
+	case CreateSchema:
+		return protocol.ChangeSemantics_ADDITIVE, "Creates a schema"
 	case AddRowDeletion, AlterRowDeletion:
 		return protocol.ChangeSemantics_BEHAVIORAL, "Sets a row deletion policy; Spanner deletes the rows older than its interval"
 	case DropRowDeletion:

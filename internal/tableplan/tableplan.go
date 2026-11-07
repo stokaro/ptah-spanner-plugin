@@ -27,6 +27,7 @@ import (
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 )
@@ -48,6 +49,7 @@ func ChangeKinds() []string { return []string{rowdeletion.ChangeKind} }
 // table come before the row deletion policy changes, as Ptah's built-in
 // Spanner engine wrote them.
 const (
+	rankSchema     = "0-schema"
 	rankTable      = "1-table"
 	rankColumn     = "2-column"
 	rankPolicy     = "2-policy"
@@ -67,6 +69,9 @@ type planner struct {
 	created map[tableKey]*protocol.StepIdentity
 	// tables are the tables of the request by key.
 	tables map[tableKey]*protocol.PlanningTable
+	// schemas is the step that creates each schema a created table names,
+	// other than the default one.
+	schemas map[string]*protocol.StepIdentity
 }
 
 // tableKey names a table by its schema and its name, which the engine
@@ -98,6 +103,7 @@ func Plan(ctx context.Context, request *protocol.PlanFeaturesRequest) (*protocol
 		receipts:     make(map[int][]*protocol.StepIdentity),
 		created:      make(map[tableKey]*protocol.StepIdentity),
 		tables:       make(map[tableKey]*protocol.PlanningTable),
+		schemas:      make(map[string]*protocol.StepIdentity),
 	}
 	for _, table := range request.GetTables() {
 		p.tables[keyOf(table.GetSubject())] = table
@@ -203,6 +209,9 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 	if err != nil {
 		return err
 	}
+	if err := p.createSchema(index, table.GetSubject(), step); err != nil {
+		return err
+	}
 	p.created[keyOf(table.GetSubject())] = step
 	for _, declared := range desired.GetIndexes() {
 		created, err := indexOperation(declared)
@@ -215,6 +224,33 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 		}
 		p.depend(step, id)
 	}
+	return nil
+}
+
+// createSchema adds the step that creates the schema a created table names,
+// once per schema, before the table's creation: Spanner refuses a table in a
+// schema that does not exist (`Schema not found`). A table in the default
+// schema needs none. The statement is CREATE SCHEMA IF NOT EXISTS, as Ptah's
+// built-in Spanner engine wrote it, because the read a plan is made from may
+// cover only the schemas a URL selects and so cannot say whether the schema
+// is there.
+func (p *planner) createSchema(index int, subject *protocol.ComparisonIdentity, creation *protocol.StepIdentity) error {
+	schema := subject.GetSchema().GetSource()
+	if schema == "" || schema == ddl.DefaultSchema {
+		return nil
+	}
+	step, found := p.schemas[schema]
+	if !found {
+		namespace := &protocol.ComparisonIdentity{Kind: "schema", Database: proto.CloneOf(subject.GetDatabase()), Catalog: proto.CloneOf(subject.GetCatalog()),
+			Name: proto.CloneOf(subject.GetSchema())}
+		var err error
+		if step, err = p.add(index, subject, rankSchema, tableop.Operation{Action: tableop.CreateSchema, Name: schema}, nil,
+			effect(namespace, protocol.PlanningEffect_CREATE)); err != nil {
+			return err
+		}
+		p.schemas[schema] = step
+	}
+	p.depend(step, creation)
 	return nil
 }
 
@@ -525,7 +561,7 @@ func (p *planner) add(index int, subject *protocol.ComparisonIdentity, rank stri
 	}
 	role := protocol.NativeOperation_ALTER_TABLE
 	switch operation.Action {
-	case tableop.CreateIndex, tableop.DropIndex:
+	case tableop.CreateIndex, tableop.DropIndex, tableop.CreateSchema:
 		role = protocol.NativeOperation_STATEMENT
 	}
 	metadata := &protocol.PlanningMetadata{Transaction: protocol.PlanningMetadata_FORBIDDEN, Effects: effects,
