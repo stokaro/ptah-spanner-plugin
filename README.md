@@ -177,8 +177,8 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   it. The provider adds its own rules:
   - `SP101` (warning): `SET NOT NULL` validates every existing row, and a row
     holding NULL fails the schema change. Ptah's built-in Spanner engine
-    reported this as `PG303`; select it as `SP101`, since `--disable PG303` and
-    Atlas's `MF104` do not reach a provider's rule.
+    reported this as `PG303`. Select it as `SP101`, or as Atlas's `MF104` in
+    `--disable`; `--disable PG303` matches no rule of a Spanner run.
   - `SP102` (info): `ALTER TABLE ... DROP TTL` drops the row deletion policy
     and no column. It replaces the `DS102` and `BC104` findings Ptah reports
     for the statement otherwise, which read it as a drop of a column named
@@ -251,14 +251,9 @@ Then select it explicitly:
 
 ```sh
 ptah providers check --provider-config providers.json --provider-engine spanner --json
-ptah schema apply --db-url 'spanner://localhost:5432/app?sslmode=disable&search_path=public' \
+ptah schema apply --db-url 'spanner://localhost:5432/app?sslmode=disable' \
   --root-dir ./entities --provider-config providers.json --provider-engine spanner
 ```
-
-A Ptah release that still builds in a Spanner engine of its own reads an
-address that pins no `search_path` as a read of every schema, through its
-built-in catalog. Pin `search_path=public` in the address until the built-in
-engine is removed.
 
 ## Build and test
 

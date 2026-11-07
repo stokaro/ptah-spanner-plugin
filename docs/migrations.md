@@ -203,9 +203,11 @@ lint/2_tighten.up.sql:1 [warning] SP101: SET NOT NULL runs as a schema change th
 lint/2_tighten.up.sql:2 [info] SP102: DROP TTL removes the table's row deletion policy and drops no column; rows the policy would have deleted are kept from now on (row deletion policy dropped)
 ```
 
-Select the rule as `SP101`. `--disable PG303`, the code PostgreSQL's
-`SET NOT NULL` check carries, names no rule of a Spanner run, and Atlas's
-`MF104` in `--disable` or an `atlas:nolint` directive does not reach `SP101`.
+Select the rule as `SP101`. Atlas's `MF104` in `--disable` reaches `SP101`, as
+it reaches PostgreSQL's `PG303`. A directive names the rule as `SP101`:
+`-- atlas:nolint MF104` silences neither `SP101` nor `PG303`. `--disable PG303`,
+the code PostgreSQL's `SET NOT NULL` check carries, is refused on a Spanner run
+with `rule selector "PG303" does not match any registered rule`.
 
 `ptah sql lint` learns from the provider what each statement is: a table created
 without a primary key (`DDL001`), a statement it does not lint, such as an
