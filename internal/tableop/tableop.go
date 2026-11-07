@@ -280,6 +280,34 @@ func Statement(captured *protocol.NormalizedValue) (string, error) {
 	return string(normalized.GetCanonicalProjection()), nil
 }
 
+// TypedColumn is a column an operation gives a type, with the type as
+// declared.
+type TypedColumn struct {
+	Name string
+	Type string
+}
+
+// Types lists the columns an operation gives a type, in the operation's
+// order: every column of a create-table, the column of an add-column, and the
+// column an alter-column-type changes. Any other action types none.
+func (o Operation) Types() []TypedColumn {
+	switch o.Action {
+	case CreateTable:
+		typed := make([]TypedColumn, len(o.Columns))
+		for i, column := range o.Columns {
+			typed[i] = TypedColumn{Name: column.Name, Type: column.Type}
+		}
+		return typed
+	case AddColumn:
+		if o.Column != nil {
+			return []TypedColumn{{Name: o.Column.Name, Type: o.Column.Type}}
+		}
+	case AlterColumnType:
+		return []TypedColumn{{Name: o.Name, Type: o.Type}}
+	}
+	return nil
+}
+
 // fields lists the operands an action reads.
 var fields = map[Action][]string{
 	CreateTable:      {"columns", "primaryKey", "rowDeletion"},

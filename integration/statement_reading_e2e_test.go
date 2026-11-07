@@ -100,20 +100,28 @@ var viewScripts = []viewScript{
 }
 
 // divergentViewScripts are the scripts Ptah's built-in Spanner engine read
-// as the server runs them and the host reads otherwise for an engine a
+// as the server runs them and an older host reads otherwise for an engine a
 // provider serves: it refuses DROP VIEW IF EXISTS of a name a table holds,
 // which the server takes and changes nothing with, and it drops a view
 // another view reads, which the server refuses. The words are what such a
 // host answers: a refusal, or the view a plan creates although the server
-// would refuse the script.
-var divergentViewScripts = []struct {
-	viewScript
-	oldRefusal, oldPlan string
-}{
+// would refuse the script. The first script reads as the server runs it
+// because the engine states that Spanner skips such a statement
+// (source.sql-statement-facts, contract 25.33).
+var divergentViewScripts = []divergentViewScript{
 	{viewScript: viewScript{name: "a name a table holds, IF EXISTS", statements: []string{"DROP VIEW IF EXISTS {t}"}},
-		oldRefusal: "DROP VIEW t_s6: the schema declares t_s6 as another kind of object"},
+		oldRefusal: "DROP VIEW t_s6: the schema declares t_s6 as another kind of object", needsStatementFacts: true},
 	{viewScript: viewScript{name: "a view another view reads", statements: []string{"CREATE VIEW {c} AS SELECT id FROM {a}", "DROP VIEW {a}"}},
 		oldPlan: `CREATE VIEW "c_s7" AS`},
+}
+
+// divergentViewScript is a script an older host reads otherwise, with what
+// such a host answers and whether the reading needs the engine's statement
+// facts.
+type divergentViewScript struct {
+	viewScript
+	oldRefusal, oldPlan string
+	needsStatementFacts bool
 }
 
 // viewReadingChange names the host change the divergent scripts need.
@@ -129,7 +137,8 @@ var createdView = regexp.MustCompile(`(?m)^CREATE VIEW "([a-z0-9_]+)" AS$`)
 // an empty database, whose plan creates the views the read ends with. A host
 // that reads no DROP VIEW in a schema document refuses the first script, and
 // a host that reads the divergent scripts otherwise skips after the others
-// are checked.
+// are checked; a host of contract 25.33 or later reads DROP VIEW IF EXISTS of
+// a table by the provider's statement facts, and fails if it refuses it.
 func TestHostReadsADroppedViewAsTheServerEndsE2E(t *testing.T) {
 	c := testcheck.New(t)
 	server, empty := withSearchPath(c, freshDatabase(c)), withSearchPath(c, freshDatabase(c))
@@ -140,7 +149,7 @@ func TestHostReadsADroppedViewAsTheServerEndsE2E(t *testing.T) {
 	}
 	for i, script := range divergentViewScripts {
 		want, output, err := runViewScript(c, server, empty, script.viewScript, len(viewScripts)+i+1)
-		skipOnOldReading(c, output, err, script.oldRefusal, script.oldPlan, viewReadingChange)
+		skipOnOldViewReading(c, output, err, script)
 		c.Assert(viewsThePlanCreates(output, err), qt.DeepEquals, want, qt.Commentf("script %q: %s", script.name, output))
 	}
 }
@@ -165,16 +174,22 @@ func runViewScript(c *qt.C, server, empty string, script viewScript, n int) ([]s
 	return want, output, err
 }
 
-// skipOnOldReading skips the test when the host answered as a host that
-// lacks change: with refusal, when it is not empty, or with a plan that holds
-// plan, when it is not empty. Any other answer is the test's to judge.
-func skipOnOldReading(c *qt.C, output string, err error, refusal, plan, change string) {
+// skipOnOldViewReading skips the test when the host answered script as a
+// host that reads it otherwise: with its old refusal, when it has one, or with
+// a plan that holds its old plan, when it has one. A script that needs the
+// engine's statement facts is skipped only on a host older than contract
+// 25.33, so a host that negotiates them and still refuses fails. Any other
+// answer is the test's to judge.
+func skipOnOldViewReading(c *qt.C, output string, err error, script divergentViewScript) {
 	c.Helper()
-	if refusal != "" {
-		skipOnOldHost(c, output, err, refusal, change)
+	if script.needsStatementFacts && !hostPredatesStatementFacts(c) {
+		return
 	}
-	if plan != "" && err == nil && strings.Contains(output, plan) {
-		c.Skipf("the host predates %s: it plans %s", change, plan)
+	if script.oldRefusal != "" {
+		skipOnOldHost(c, output, err, script.oldRefusal, viewReadingChange)
+	}
+	if script.oldPlan != "" && err == nil && strings.Contains(output, script.oldPlan) {
+		c.Skipf("the host predates %s: it plans %s", viewReadingChange, script.oldPlan)
 	}
 }
 

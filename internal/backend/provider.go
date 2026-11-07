@@ -100,6 +100,10 @@ func providerFeatures() []string {
 	return []string{
 		provider.InspectFeature,
 		provider.RenderFeature,
+		// A render names what Spanner leaves out of a declared column type
+		// it accepts: integer is stored as bigint, without the 32-bit range;
+		// see appendOmissions.
+		provider.RenderOmissionsFeature,
 		provider.ExecuteFeature,
 		provider.AnalyzeSQLFeature,
 		// The query dialect states the lexical rules the host reads Spanner's
@@ -176,6 +180,10 @@ func providerFeatures() []string {
 		// clause of CREATE TABLE, which the provider claims and reads; see
 		// policysource.SQLClause.
 		provider.SQLTableClausesFeature,
+		// The engine states how Spanner runs a statement of a SQL schema
+		// document that servers answer differently, so the host reads the
+		// document as the server runs it; see sqlSchema.
+		provider.SQLStatementFactsFeature,
 		provider.CompareModelsFeature,
 		provider.ReverseChangesFeature,
 		provider.ReportCountsFeature,
@@ -231,8 +239,8 @@ func engineFeatures() []string {
 }
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider, below the one the SDK it is built with speaks (25.31). The
-// additions of contracts 25.28 and 25.29 that it uses are negotiated, and a
+// provider, below the one the SDK it is built with speaks (25.33). The
+// additions of contracts 25.28 to 25.33 that it uses are negotiated, and a
 // host that lists none of them is served as before they existed:
 //
 //   - without observed constraints, a read refuses a table's foreign keys and
@@ -244,7 +252,9 @@ func engineFeatures() []string {
 //   - without the reserved seed ledger, a read reports schema_seeds as a
 //     table;
 //   - without index predicates, a read and a declaration of a filtered index
-//     are refused.
+//     are refused;
+//   - without SQL statement facts, the host refuses a schema document's DROP
+//     VIEW IF EXISTS of a table, which Spanner takes and ignores.
 //
 // The live tests run against such a host and against one that negotiates
 // them. An older host is refused before a session opens.
@@ -281,10 +291,28 @@ func Description() *protocol.Description {
 			YamlSourceKeys:     policysource.YAMLKeys(),
 			GoSourceDirectives: policysource.GoDirectives(),
 			HclSource:          &protocol.HCLSourceDeclaration{Blocks: []*protocol.HCLSourceBlock{policysource.HCLPlatformBlock()}},
-			SqlSchema: &protocol.SQLSchemaDeclaration{Mode: protocol.SQLSchemaDeclaration_FRAGMENTS,
-				TableClauses: []*protocol.SQLTableClause{policysource.SQLClause()}},
-			CommonObjects: commonobject.Support(),
+			SqlSchema:          sqlSchema(),
+			CommonObjects:      commonobject.Support(),
 		}},
+	}
+}
+
+// sqlSchema declares how the host reads a SQL schema document for the
+// engine: with the shared grammar (the FRAGMENTS mode), the TTL clause of
+// CREATE TABLE claimed by the provider, and the statement facts of Spanner's
+// server (source.sql-statement-facts, contract 25.33).
+//
+// DROP VIEW IF EXISTS of a name a table holds does nothing on Spanner:
+// measured on the emulator behind PGAdapter 0.56.2, the statement succeeds
+// and the table stays, and Ptah's built-in Spanner engine read a document so.
+// Without the fact the host refuses the document
+// (`the schema declares t as another kind of object`), which is the answer of
+// a server that refuses the statement, such as PostgreSQL.
+func sqlSchema() *protocol.SQLSchemaDeclaration {
+	return &protocol.SQLSchemaDeclaration{
+		Mode:                            protocol.SQLSchemaDeclaration_FRAGMENTS,
+		TableClauses:                    []*protocol.SQLTableClause{policysource.SQLClause()},
+		DropViewIfExistsSkipsOtherKinds: true,
 	}
 }
 
