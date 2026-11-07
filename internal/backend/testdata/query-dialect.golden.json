@@ -1,0 +1,17 @@
+{
+  "host_commit": "d59a3b63dfdab6836be78b2112b8adf796470450",
+  "placeholder": "dollar",
+  "quoting": {
+    "style": "double"
+  },
+  "query": {
+    "upsert": "on-conflict"
+  },
+  "default_capabilities": {
+    "common_table_expressions": true,
+    "correlated_subqueries": true,
+    "non_equi_joins": true,
+    "offset_without_limit": true,
+    "returning_clause": true
+  }
+}
