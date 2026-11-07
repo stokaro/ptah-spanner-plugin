@@ -4,7 +4,8 @@
 // information_schema, owns the lifecycle of the engine's tables (it checks a
 // declaration, predicts what a creation holds, judges column types and
 // defaults in Spanner's spelling and plans every table statement), and
-// renders and runs the statements it plans.
+// renders and runs the statements it plans. It also types, reads and writes
+// the rows a schema declares, and runs seed files with their ledger.
 //
 // The provider describes what it reads completely or refuses the read: an
 // object it does not describe yet, such as a foreign key or a view, fails the
@@ -21,6 +22,7 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/migrationlint"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableplan"
@@ -132,14 +134,26 @@ func providerFeatures() []string {
 		// A migration body runs statement by statement, each where Spanner
 		// runs it; see migrationunits.
 		provider.MigrationSplitFeature,
+		// Declared rows are typed, read and written by the provider, and seed
+		// files run through it with their ledger; see rows.go and seeds.go.
+		provider.TypeRowsFeature,
+		provider.ReadRowsFeature,
+		provider.RenderRowWritesFeature,
+		provider.SeedsFeature,
+		// Migration lint splits a migration as Spanner reads it and checks
+		// the SP rules; see lint.go.
+		provider.LintFeature,
 	}
 }
 
 // engineFeatures is the feature list of the spanner engine: every feature of
-// the provider. The description, the session and the inspection snapshot all
+// the provider, and the statement facts of its lint split, which an engine
+// alone lists. The description, the session and the inspection snapshot all
 // report it, so the host holds one target profile for observed, desired and
 // planned values.
-func engineFeatures() []string { return providerFeatures() }
+func engineFeatures() []string {
+	return append(providerFeatures(), provider.LintStatementFactsFeature)
+}
 
 // minimumContract is the oldest contract a host must speak to start the
 // provider: the one the SDK it is built with speaks, which is the contract its
@@ -162,7 +176,9 @@ func Description() *protocol.Description {
 			Identifiers:   identifierRules(),
 			ReleaseLines:  releaseLines(),
 			Features:      engineFeatures(),
+			LintRules:     migrationlint.Rules(),
 			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, rowdeletion.Models()...),
+			QueryDialect:  queryDialect(),
 			Planning: []*protocol.ModelPlanning{{
 				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), OperationKinds: []string{tableop.Kind},
 			}},

@@ -25,5 +25,10 @@ func Server() runtime.Server {
 		Columns:         spanner,
 		FeaturePlanner:  spanner,
 		MigrationSplits: spanner,
+		RowTyper:        spanner,
+		RowReader:       spanner,
+		RowWriter:       spanner,
+		Seeds:           spanner,
+		Linter:          spanner,
 	}
 }

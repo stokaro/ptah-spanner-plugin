@@ -92,6 +92,38 @@ is evidence about the PostgreSQL interface, not about the managed service.
   - The revision rows are compared and written in Spanner's read-write
     transactions, which change data only. A read reserves the three tables, so a
     schema apply never plans their removal.
+- **Declared rows.** Rows a schema declares (`//ptah:schema:data`) are typed,
+  read and written by the provider. A value is compared in one form for its
+  column type, so a row Spanner stores in another spelling plans nothing:
+  numeric `1e3` is 1000 and `12.50` is 12.5, JSON members are sorted and
+  numbers compared by value, text in bytea hex is the bytes it spells, and a
+  moment is rounded to the microsecond Spanner reads back. A moment written
+  without an offset is UTC, and every moment the provider writes carries its
+  offset, because Spanner reads one without in America/Los_Angeles.
+- **Seeds.** `ptah seed` runs each file and its entry in the ledger
+  `schema_seeds`, the table and layout Ptah's built-in Spanner engine kept, in
+  one read-write transaction. A file that hits an existing key keeps nothing,
+  and `--idempotent` records it instead. A file holding a schema statement, a
+  transaction statement or a setting is refused before anything of it runs,
+  naming the line.
+- **Migration lint.** `ptah migrations lint --dialect spanner` and `ptah sql
+  lint --dialect spanner` read a file through the provider's split, which takes
+  every statement a migration holds, and Ptah's rules for every engine run over
+  it. The provider adds its own rules:
+  - `SP101` (warning): `SET NOT NULL` validates every existing row, and a row
+    holding NULL fails the schema change. Ptah's built-in Spanner engine
+    reported this as `PG303`; select it as `SP101`, since `--disable PG303` and
+    Atlas's `MF104` do not reach a provider's rule.
+  - `SP102` (info): `ALTER TABLE ... DROP TTL` drops the row deletion policy
+    and no column. It replaces the `DS102` and `BC104` findings Ptah reports
+    for the statement otherwise, which read it as a drop of a column named
+    `TTL`.
+
+  `ptah sql lint` learns from the provider what each statement is: a table
+  created without a primary key (`DDL001`), a statement it does not lint, such
+  as an `INSERT` (`SQL002`), and `CREATE INDEX CONCURRENTLY`, which Spanner
+  refuses (`CAP001`). A text the provider cannot read, such as one with a
+  dollar-quoted string, fails the run with the reason.
 
 What is not served yet, in the order it is planned: reading foreign keys and
 CHECK constraints back and changing them on a kept table (a read of a table
