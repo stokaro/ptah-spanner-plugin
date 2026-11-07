@@ -87,3 +87,39 @@ func TestLocksSubprocess_ReadReservesTheLockTable(t *testing.T) {
 	c.Assert(snapshot.GetReservedObjects()[0].GetObject().GetName(), qt.Equals, "ptah_locks")
 	c.Assert(snapshot.GetReservedObjects()[0].GetPurpose(), qt.Equals, protocol.ReservedObject_LOCK)
 }
+
+// leaseEnd reads when the lease of the lock row ends.
+func leaseEnd(c *qt.C, address string) string {
+	c.Helper()
+	rows := queryRows(c, address, `SELECT expires_at::text FROM ptah_locks WHERE lock_name = 'ptah_schema_apply'`)
+	c.Assert(rows, qt.HasLen, 1)
+	return rows[0]
+}
+
+// A check that finds most of the lease left reads the lock row and writes
+// nothing, and one that finds little left renews the lease. Spanner's
+// emulator runs one read-write transaction at a time, so a check every
+// second that wrote the row would stall every transaction the session runs
+// beside it. Measured on the emulator: a two-statement migration took 5.8 s
+// with every check writing and 0.75 s with checks that read, and with every
+// check writing two of the twenty-two commands of the measurement failed, one
+// of them losing its lock.
+func TestLocksSubprocess_ChecksReadALiveLease(t *testing.T) {
+	c := testcheck.New(t)
+	address := freshDatabase(c)
+	client := startProvider(c)
+	session := openSession(c, client, address)
+	c.Assert(tryLock(c, client, session.GetId(), "l1", "r1"), qt.Equals, protocol.LockResult_ACQUIRED)
+	taken := leaseEnd(c, address)
+	checked, err := client.CheckLock(c.Context(), lockRequest(session.GetId(), "l1", "r2"))
+	c.Assert(err, qt.IsNil)
+	c.Assert(checked.GetOutcome(), qt.Equals, protocol.LockResult_ACQUIRED)
+	c.Assert(leaseEnd(c, address), qt.Equals, taken)
+
+	execSQL(c, address, `UPDATE ptah_locks SET expires_at = CURRENT_TIMESTAMP + INTERVAL '5 seconds' WHERE lock_name = 'ptah_schema_apply'`)
+	short := leaseEnd(c, address)
+	checked, err = client.CheckLock(c.Context(), lockRequest(session.GetId(), "l1", "r3"))
+	c.Assert(err, qt.IsNil)
+	c.Assert(checked.GetOutcome(), qt.Equals, protocol.LockResult_ACQUIRED)
+	c.Assert(leaseEnd(c, address) > short, qt.IsTrue)
+}

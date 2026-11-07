@@ -51,6 +51,12 @@ const (
 	AlterSequence
 	// DropSequence drops a sequence.
 	DropSequence
+	// Insert, Update and Delete change rows, and Select reads them. A
+	// migration body holds them beside its schema statements.
+	Insert
+	Update
+	Delete
+	Select
 )
 
 // Statement is one statement of a text.
@@ -68,7 +74,8 @@ type Statement struct {
 
 // ErrUnknownStatement reports a statement the provider does not know.
 var ErrUnknownStatement = errors.New("the provider analyzes CREATE and DROP of a TABLE, an INDEX, a VIEW or a SEQUENCE, " +
-	"CREATE OR REPLACE VIEW, ALTER SEQUENCE and ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL only")
+	"CREATE OR REPLACE VIEW, ALTER SEQUENCE, ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL, " +
+	"INSERT, UPDATE, DELETE and SELECT only")
 
 // Split splits a text into statements. Every byte of the text belongs to a
 // statement or is white space between statements: a comment before a
@@ -260,10 +267,10 @@ func classify(text string, start, end int, source []string) (Statement, error) {
 	return Statement{Start: start, End: end, Line: 1 + strings.Count(text[:start], "\n"), SourceWords: source, Words: words, Kind: kind}, nil
 }
 
-// leadingWords are the statements a kind is told by its leading words. The
+// statementWords are the statements a kind is told by its leading words. The
 // table name of an ALTER TABLE is one name or a schema and a name joined by a
 // dot, and alterKind reads what follows it.
-var leadingWords = []struct {
+var statementWords = []struct {
 	words []string
 	kind  Kind
 }{
@@ -282,19 +289,26 @@ var leadingWords = []struct {
 
 // kindOf reads the statement's leading words.
 func kindOf(words []string) (Kind, error) {
+	if kind, found := dataKinds[words[0]]; found && len(words) > 1 {
+		return kind, nil
+	}
 	if len(words) < 3 {
 		return 0, ErrUnknownStatement
 	}
 	if words[0] == "ALTER" && words[1] == "TABLE" {
 		return alterKind(words[3:])
 	}
-	for _, leading := range leadingWords {
+	for _, leading := range statementWords {
 		if len(words) > len(leading.words) && slices.Equal(words[:len(leading.words)], leading.words) {
 			return leading.kind, nil
 		}
 	}
 	return 0, ErrUnknownStatement
 }
+
+// dataKinds are the statements that change or read rows, by their first
+// word.
+var dataKinds = map[string]Kind{"INSERT": Insert, "UPDATE": Update, "DELETE": Delete, "SELECT": Select}
 
 func isSpace(character byte) bool { return strings.IndexByte(" \t\r\n\f\v", character) >= 0 }
 
