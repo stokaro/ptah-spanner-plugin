@@ -34,11 +34,28 @@ is evidence about the PostgreSQL interface, not about the managed service.
   created without a primary key), a filtered, search or interleaved index, or an
   interleaved table. Ptah plans to create what a read leaves out, so leaving
   such an object out would plan a change the database refuses.
-- **Plans.** Ptah plans the engine's tables with its common planner, and the
-  provider writes each change: `CREATE TABLE`, `DROP TABLE`, and `ALTER TABLE`
-  to add or drop a column. A column type Spanner refuses (`smallint`, `int4`,
-  `timestamp`, `json`, `numeric(p,s)` and others) is refused before anything is
-  sent, as is a `NOT NULL` column added without a default.
+- **Plans.** The provider owns the lifecycle of the engine's tables: Ptah hands
+  it every table a plan creates, changes or drops, and it plans each statement
+  itself, one action per statement as Spanner runs them.
+  - A created table is one `CREATE TABLE` with its key in key order, its
+    defaults and its column `CHECK` constraints (an enum column is `TEXT` under
+    a `CHECK` that lists its values), followed by its indexes and then by each
+    foreign key and table `CHECK`, so two new tables may reference each other.
+    A foreign key on `jsonb`, `numeric`, `real` or an array column is refused,
+    as are `ON UPDATE`, deferral and every `ON DELETE` but `CASCADE`.
+  - An index keeps each key's direction and NULLS ordering and its `INCLUDE`
+    (`STORING`) columns. A changed index is dropped and created again under
+    its name.
+  - A column of a kept table changes with `ALTER COLUMN`: its type, between
+    `character varying` of any length and `bytea`, which is all Spanner changes
+    in place; its default; and `NOT NULL`. A `NOT NULL` column without a
+    default is added nullable and then made `NOT NULL`, because Spanner refuses
+    to add it otherwise.
+  - A dropped table, and a dropped column, lose their indexes first.
+  - Spanner cannot change a primary key or the type of a key column, so a plan
+    that does either is refused with that reason, as is any other type change
+    and a column type Spanner does not have (`smallint`, `timestamp`, `json`,
+    `numeric(p,s)` and others), before a statement is sent.
 - **Execution.** Spanner refuses a schema statement inside an explicit
   transaction, so each statement commits as it runs. A statement Spanner refuses
   applied nothing and the statements before it stay applied; the result says how
@@ -52,10 +69,13 @@ is evidence about the PostgreSQL interface, not about the managed service.
   lock until its lease ends. A read reserves the table, so Ptah never plans its
   removal or writes it into an export.
 
-What is not served yet, in the order it is planned: column changes and indexes
-through the provider's own table planning, foreign keys and CHECK constraints,
-the row deletion policy, views and sequences, and versioned migrations. The
-plan and the measurements behind it are kept with #4204.
+What is not served yet, in the order it is planned: reading foreign keys and
+CHECK constraints back and changing them on a kept table (a read of a table
+that holds one is refused), the row deletion policy, views and sequences, and
+versioned migrations. The plan and the measurements behind it are kept with
+#4204. Creating a table with a foreign key or a table `CHECK`, and writing a
+read as SQL with `ptah db read`, need a Ptah release with
+[Ptah #5559](https://github.com/stokaro/ptah/pull/5559).
 
 ## Use it
 

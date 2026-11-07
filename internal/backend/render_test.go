@@ -8,24 +8,37 @@ import (
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/backend"
+	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
 )
 
-func table(name string) *protocol.Reference {
-	return &protocol.Reference{Engine: "spanner", Database: "app", Schema: "public", Kind: "table", Name: name}
+// native is the change that runs operation on table, as the host renders a
+// planned step: a standalone statement, or an ALTER TABLE naming its table
+// as the parent, which the host names without its default schema.
+func native(c *qt.C, id, table string, role protocol.NativeOperation_Role, operation tableop.Operation) *protocol.Change {
+	c.Helper()
+	value, err := tableop.Capture(id, tableop.Owner("public", table), operation)
+	c.Assert(err, qt.IsNil)
+	change := &protocol.Change{Id: id, Object: &protocol.Reference{Engine: "spanner", Kind: "table", Name: table},
+		Operation: &protocol.Change_Native{Native: &protocol.NativeOperation{Value: value, Role: role}}}
+	if role == protocol.NativeOperation_ALTER_TABLE {
+		change.GetNative().Parent = &protocol.Reference{Engine: "spanner", Kind: "table", Name: table}
+	}
+	return change
 }
 
 func TestRender_HappyPath(t *testing.T) {
 	c := testcheck.New(t)
-	request := &protocol.RenderRequest{Changes: []*protocol.Change{
-		{Id: "1", Object: table("users"), Operation: &protocol.Change_CreateTable{CreateTable: &protocol.Table{Columns: []*protocol.Column{
-			{Name: "id", Type: "BIGINT", PrimaryKey: true}, {Name: "email", Type: "VARCHAR(255)", Nullable: true},
-		}}}},
-		{Id: "2", Object: table("users"), Operation: &protocol.Change_AddColumn{AddColumn: &protocol.Column{Name: "note", Type: "TEXT", Nullable: true}}},
-		{Id: "3", Object: table("users"), Operation: &protocol.Change_DropColumn{DropColumn: "email"}},
-		{Id: "4", Object: table("old"), Operation: &protocol.Change_DropTable{DropTable: &protocol.Empty{}}},
+	request := &protocol.RenderRequest{Engine: "spanner", Changes: []*protocol.Change{
+		native(c, "1", "users", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.CreateTable, PrimaryKey: []string{"id"},
+			Columns: []tableop.Column{{Name: "id", Type: "BIGINT"}, {Name: "email", Type: "VARCHAR(255)", Nullable: true}}}),
+		native(c, "2", "users", protocol.NativeOperation_ALTER_TABLE, tableop.Operation{Action: tableop.AddColumn, Column: &tableop.Column{Name: "note", Type: "TEXT", Nullable: true}}),
+		native(c, "3", "users", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.CreateIndex, Index: &tableop.Index{Name: "users_email",
+			Keys: []tableop.IndexKey{{Column: "email"}}}}),
+		native(c, "4", "old", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.DropTable}),
 	}}
 	result, err := backend.New().Render(context.Background(), request)
 	c.Assert(err, qt.IsNil)
@@ -37,9 +50,9 @@ func TestRender_HappyPath(t *testing.T) {
 	}
 	c.Assert(changes, qt.DeepEquals, []string{"1", "2", "3", "4"})
 	c.Assert(statements, qt.DeepEquals, []string{
-		"CREATE TABLE \"users\" (\n  \"id\" BIGINT NOT NULL,\n  \"email\" VARCHAR(255),\n  PRIMARY KEY (\"id\")\n);",
+		"CREATE TABLE \"users\" (\n  \"id\" BIGINT PRIMARY KEY NOT NULL,\n  \"email\" VARCHAR(255)\n);",
 		`ALTER TABLE "users" ADD COLUMN "note" TEXT;`,
-		`ALTER TABLE "users" DROP COLUMN "email";`,
+		`CREATE INDEX "users_email" ON "users" ("email");`,
 		`DROP TABLE "old";`,
 	})
 }
@@ -47,34 +60,29 @@ func TestRender_HappyPath(t *testing.T) {
 // A change the provider cannot write refuses the whole batch, so the host
 // never receives part of a plan.
 func TestRender_FailurePath(t *testing.T) {
+	c := testcheck.New(t)
+	changed := native(c, "x", "t", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.DropTable})
+	changed.GetNative().GetValue().CanonicalProjection = []byte(`DROP TABLE "other";`)
+	foreignParent := native(c, "x", "t", protocol.NativeOperation_ALTER_TABLE, tableop.Operation{Action: tableop.DropColumn, Name: "c"})
+	foreignParent.GetNative().Parent = &protocol.Reference{Engine: "spanner", Kind: "table", Name: "u"}
+	standaloneParent := native(c, "x", "t", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.DropTable})
+	standaloneParent.GetNative().Parent = &protocol.Reference{Engine: "spanner", Kind: "table", Name: "t"}
 	tests := []struct {
 		name    string
 		change  *protocol.Change
 		wantErr string
 	}{
-		{name: "a native operation", change: &protocol.Change{Id: "x", Object: table("t"), Operation: &protocol.Change_Native{Native: &protocol.NativeOperation{}}},
-			wantErr: `.*the provider creates and drops tables and adds and drops columns; other changes come with later releases.*`},
-		{name: "a primary key column added", change: &protocol.Change{Id: "x", Object: table("t"),
-			Operation: &protocol.Change_AddColumn{AddColumn: &protocol.Column{Name: "k", Type: "bigint", PrimaryKey: true}}},
-			wantErr: `.*Spanner cannot add a primary key column to an existing table.*`},
-		{name: "a NOT NULL column added without a default", change: &protocol.Change{Id: "x", Object: table("t"),
-			Operation: &protocol.Change_AddColumn{AddColumn: &protocol.Column{Name: "k", Type: "bigint"}}},
-			wantErr: `.*NOT NULL without a default, which Spanner refuses to add to an existing table.*`},
-		{name: "a type Spanner refuses", change: &protocol.Change{Id: "x", Object: table("t"),
-			Operation: &protocol.Change_CreateTable{CreateTable: &protocol.Table{Columns: []*protocol.Column{{Name: "k", Type: "int4", PrimaryKey: true}}}}},
-			wantErr: `.*Spanner stores integers as bigint only.*`},
-		{name: "a table with engine settings", change: &protocol.Change{Id: "x", Object: table("t"),
-			Operation: &protocol.Change_CreateTable{CreateTable: &protocol.Table{Columns: []*protocol.Column{{Name: "k", Type: "bigint"}}, Facets: []*protocol.Envelope{{}}}}},
-			wantErr: `.*the provider creates a table from its columns alone.*`},
-		{name: "a reference with a path", change: &protocol.Change{Id: "x", Object: &protocol.Reference{Name: "t", Path: []string{"a"}},
-			Operation: &protocol.Change_DropTable{DropTable: &protocol.Empty{}}},
-			wantErr: `.*a Spanner table has a schema and a name and nothing else.*`},
+		{name: "a common table change", change: &protocol.Change{Id: "x", Operation: &protocol.Change_DropTable{DropTable: &protocol.Empty{}}},
+			wantErr: `.*the provider renders the table operations it plans and nothing else.*`},
+		{name: "an operation changed after planning", change: changed, wantErr: `.*a Spanner table operation changed after it was planned.*`},
+		{name: "an ALTER TABLE of another table", change: foreignParent, wantErr: `.*a table operation names its own table as its parent.*`},
+		{name: "a statement with a parent", change: standaloneParent, wantErr: `.*a standalone table operation has no parent.*`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			c := testcheck.New(t)
-			ok := &protocol.Change{Id: "ok", Object: table("other"), Operation: &protocol.Change_DropTable{DropTable: &protocol.Empty{}}}
-			result, err := backend.New().Render(context.Background(), &protocol.RenderRequest{Changes: []*protocol.Change{ok, test.change}})
+			ok := native(c, "ok", "other", protocol.NativeOperation_STATEMENT, tableop.Operation{Action: tableop.DropTable})
+			result, err := backend.New().Render(context.Background(), &protocol.RenderRequest{Changes: []*protocol.Change{ok, proto.CloneOf(test.change)}})
 			c.Assert(status.Code(err), qt.Equals, codes.InvalidArgument)
 			c.Assert(err, qt.ErrorMatches, test.wantErr)
 			c.Assert(result, qt.IsNil)

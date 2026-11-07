@@ -9,6 +9,7 @@ import (
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
+	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
 )
 
@@ -17,12 +18,17 @@ import (
 func TestRenderAndAnalysisOfflineSubprocess(t *testing.T) {
 	c := testcheck.New(t)
 	client := startProvider(c)
-	table := &protocol.Reference{Engine: "spanner", Database: "app", Schema: "public", Kind: "table", Name: "items"}
+	create, err := tableop.Capture("1", tableop.Owner("public", "items"), tableop.Operation{Action: tableop.CreateTable, PrimaryKey: []string{"id"},
+		Columns: []tableop.Column{{Name: "id", Type: "BIGINT"}, {Name: "name", Type: "TEXT", Nullable: true}}})
+	c.Assert(err, qt.IsNil)
+	index, err := tableop.Capture("2", tableop.Owner("public", "items"), tableop.Operation{Action: tableop.CreateIndex, Index: &tableop.Index{Name: "items_name",
+		Keys: []tableop.IndexKey{{Column: "name", Descending: true}}}})
+	c.Assert(err, qt.IsNil)
+	// The change names the operation's owner, as the host names it.
+	table := tableop.Owner("public", "items")
 	rendered, err := client.Render(c.Context(), &protocol.RenderRequest{Engine: "spanner", Changes: []*protocol.Change{
-		{Id: "1", Object: table, Operation: &protocol.Change_CreateTable{CreateTable: &protocol.Table{Columns: []*protocol.Column{
-			{Name: "id", Type: "BIGINT", PrimaryKey: true}, {Name: "name", Type: "TEXT", Nullable: true},
-		}}}},
-		{Id: "2", Object: table, Operation: &protocol.Change_DropColumn{DropColumn: "name"}},
+		{Id: "1", Object: table, Operation: &protocol.Change_Native{Native: &protocol.NativeOperation{Value: create, Role: protocol.NativeOperation_STATEMENT}}},
+		{Id: "2", Object: table, Operation: &protocol.Change_Native{Native: &protocol.NativeOperation{Value: index, Role: protocol.NativeOperation_STATEMENT}}},
 	}})
 	c.Assert(err, qt.IsNil)
 	c.Assert(rendered.GetUnits(), qt.HasLen, 2)
@@ -34,8 +40,8 @@ func TestRenderAndAnalysisOfflineSubprocess(t *testing.T) {
 	c.Assert(analysis.GetFiles()[0].GetStatements(), qt.HasLen, 2)
 
 	refused, err := client.Render(c.Context(), &protocol.RenderRequest{Engine: "spanner", Changes: []*protocol.Change{
-		{Id: "1", Object: table, Operation: &protocol.Change_AddColumn{AddColumn: &protocol.Column{Name: "n", Type: "BIGINT"}}},
+		{Id: "1", Object: table, Operation: &protocol.Change_DropTable{DropTable: &protocol.Empty{}}},
 	}})
-	c.Assert(err, qt.ErrorMatches, `.*\(InvalidArgument\): column "n" of table "items" is NOT NULL without a default, which Spanner refuses to add to an existing table`)
+	c.Assert(err, qt.ErrorMatches, `.*\(InvalidArgument\): the provider renders the table operations it plans and nothing else`)
 	c.Assert(refused, qt.IsNil)
 }

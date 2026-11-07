@@ -57,6 +57,18 @@ func TestSplit_HappyPath(t *testing.T) {
 			want: []span{{Start: 2, End: 14, Line: 1, Kind: sqltext.DropTable, Words: []string{"DROP", "TABLE", "T"}}},
 		},
 		{
+			name: "the index and column statements the provider renders",
+			text: "CREATE UNIQUE INDEX \"u\" ON \"t\" (\"a\" DESC) INCLUDE (\"b\");\nDROP INDEX \"u\";\nALTER TABLE \"t\" ALTER COLUMN \"a\" SET NOT NULL;\n" +
+				"ALTER TABLE \"t\" ADD CONSTRAINT \"f\" FOREIGN KEY (\"a\") REFERENCES \"p\"(\"id\");",
+			want: []span{
+				{Start: 0, End: 56, Line: 1, Kind: sqltext.CreateIndex, Words: []string{"CREATE", "UNIQUE", "INDEX", `"u"`, "ON", `"t"`, "(", `"a"`, "DESC", ")", "INCLUDE", "(", `"b"`, ")"}},
+				{Start: 57, End: 72, Line: 2, Kind: sqltext.DropIndex, Words: []string{"DROP", "INDEX", `"u"`}},
+				{Start: 73, End: 119, Line: 3, Kind: sqltext.AlterColumn, Words: []string{"ALTER", "TABLE", `"t"`, "ALTER", "COLUMN", `"a"`, "SET", "NOT", "NULL"}},
+				{Start: 120, End: 194, Line: 4, Kind: sqltext.AddConstraint, Words: []string{"ALTER", "TABLE", `"t"`, "ADD", "CONSTRAINT", `"f"`, "FOREIGN", "KEY", "(", `"a"`, ")",
+					"REFERENCES", `"p"`, "(", `"id"`, ")"}},
+			},
+		},
+		{
 			name: "only white space",
 			text: " \n\t",
 			want: make([]span, 0),
@@ -76,9 +88,11 @@ func TestSplit_FailurePath(t *testing.T) {
 	tests := []struct {
 		name, text, wantErr string
 	}{
-		{name: "an index statement", text: "CREATE INDEX i ON t (a);", wantErr: `the provider analyzes CREATE TABLE, DROP TABLE and ALTER TABLE \.\.\. ADD COLUMN or DROP COLUMN only`},
+		{name: "a view", text: "CREATE VIEW v AS SELECT 1;", wantErr: `the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX and ` +
+			`ALTER TABLE \.\.\. ADD COLUMN, DROP COLUMN, ALTER COLUMN or ADD CONSTRAINT only`},
 		{name: "a data statement", text: "INSERT INTO t VALUES (1);", wantErr: `the provider analyzes .*`},
-		{name: "an ALTER TABLE of another kind", text: "ALTER TABLE t ALTER COLUMN a SET NOT NULL;", wantErr: `the provider analyzes .*`},
+		{name: "an ALTER TABLE of another kind", text: "ALTER TABLE t RENAME TO u;", wantErr: `the provider analyzes .*`},
+		{name: "a short statement", text: "DROP INDEX;", wantErr: `the provider analyzes .*`},
 		{name: "an unclosed quoted name", text: `DROP TABLE "t;`, wantErr: `a quoted name is not closed`},
 		{name: "an unclosed string", text: `ALTER TABLE t ADD COLUMN c text DEFAULT 'x;`, wantErr: `a string is not closed`},
 		{name: "an unclosed comment", text: `DROP TABLE t /* x`, wantErr: `a comment is not closed`},

@@ -39,9 +39,9 @@ func (*Provider) AnalyzeSQL(ctx context.Context, request *protocol.AnalyzeSQLReq
 				Words:       statement.Words,
 				SourceWords: statement.SourceWords,
 				Canonical:   strings.Join(statement.Words, " "),
-				// The four statements are common DDL: the host judges what a
-				// common statement does to the schema, and a DROP is
-				// destructive in its judgment, not in the provider's.
+				// Every statement the provider analyzes is common DDL: the host
+				// judges what a common statement does to the schema, and a
+				// DROP is destructive in its judgment, not in the provider's.
 				Safety: protocol.SQLStatement_COMMON_DDL,
 			})
 		}

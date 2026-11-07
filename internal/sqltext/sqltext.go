@@ -26,6 +26,14 @@ const (
 	AddColumn
 	// DropColumn drops a column from a table.
 	DropColumn
+	// AlterColumn changes a column's type, default or nullability.
+	AlterColumn
+	// AddConstraint adds a foreign key or CHECK constraint to a table.
+	AddConstraint
+	// CreateIndex creates an index.
+	CreateIndex
+	// DropIndex drops an index.
+	DropIndex
 )
 
 // Statement is one statement of a text.
@@ -42,7 +50,8 @@ type Statement struct {
 }
 
 // ErrUnknownStatement reports a statement the provider does not know.
-var ErrUnknownStatement = errors.New("the provider analyzes CREATE TABLE, DROP TABLE and ALTER TABLE ... ADD COLUMN or DROP COLUMN only")
+var ErrUnknownStatement = errors.New("the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX and " +
+	"ALTER TABLE ... ADD COLUMN, DROP COLUMN, ALTER COLUMN or ADD CONSTRAINT only")
 
 // Split splits a text into statements. Every byte of the text belongs to a
 // statement or is white space between statements: a comment before a
@@ -105,6 +114,28 @@ func Split(text string) ([]Statement, error) {
 		statements[len(statements)-1].End = len(text)
 	}
 	return statements, nil
+}
+
+// alterKind reads what an ALTER TABLE does from the words after the table's
+// first name.
+func alterKind(rest []string) (Kind, error) {
+	if len(rest) >= 2 && rest[0] == "." {
+		rest = rest[2:]
+	}
+	if len(rest) < 3 {
+		return 0, ErrUnknownStatement
+	}
+	switch rest[0] + " " + rest[1] {
+	case "ADD COLUMN":
+		return AddColumn, nil
+	case "DROP COLUMN":
+		return DropColumn, nil
+	case "ALTER COLUMN":
+		return AlterColumn, nil
+	case "ADD CONSTRAINT":
+		return AddConstraint, nil
+	}
+	return 0, ErrUnknownStatement
 }
 
 // operators are the characters an operator token is made of.
@@ -210,27 +241,20 @@ func classify(text string, start, end int, source []string) (Statement, error) {
 // kindOf reads the statement's leading words. The table name is one name or
 // a schema and a name joined by a dot.
 func kindOf(words []string) (Kind, error) {
-	if len(words) < 3 || words[1] != "TABLE" {
+	if len(words) < 3 {
 		return 0, ErrUnknownStatement
 	}
-	switch words[0] {
-	case "CREATE":
+	switch {
+	case words[0] == "CREATE" && words[1] == "TABLE":
 		return CreateTable, nil
-	case "DROP":
+	case words[0] == "DROP" && words[1] == "TABLE":
 		return DropTable, nil
-	case "ALTER":
-		rest := words[3:]
-		if len(rest) >= 2 && rest[0] == "." {
-			rest = rest[2:]
-		}
-		if len(rest) >= 3 && rest[1] == "COLUMN" {
-			switch rest[0] {
-			case "ADD":
-				return AddColumn, nil
-			case "DROP":
-				return DropColumn, nil
-			}
-		}
+	case words[0] == "CREATE" && (words[1] == "INDEX" || words[1] == "UNIQUE" && words[2] == "INDEX"):
+		return CreateIndex, nil
+	case words[0] == "DROP" && words[1] == "INDEX":
+		return DropIndex, nil
+	case words[0] == "ALTER" && words[1] == "TABLE":
+		return alterKind(words[3:])
 	}
 	return 0, ErrUnknownStatement
 }

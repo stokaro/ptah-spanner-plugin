@@ -16,5 +16,10 @@ func Server() runtime.Server {
 		SQLAnalyzer:     spanner,
 		ValueNormalizer: spanner,
 		Locks:           spanner,
+		SchemaValidator: spanner,
+		TablePreparer:   spanner,
+		TableCreations:  spanner,
+		Columns:         spanner,
+		FeaturePlanner:  spanner,
 	}
 }
