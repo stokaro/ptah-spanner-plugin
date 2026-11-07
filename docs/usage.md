@@ -123,6 +123,7 @@ Some of what these pages describe needs more:
 | Service | Needs |
 | --- | --- |
 | Reading, comparing and changing foreign keys and `CHECK` constraints | Provider contract 25.28; an older Ptah gets the read of a table that holds one refused |
+| Enum columns, created as `TEXT` under a `CHECK` | Provider contract 25.31; an older Ptah refuses an enum column with `SchemaDiff.EnumsAdded` |
 | Creating a table with a foreign key or a table `CHECK`, and `ptah db read` | A Ptah that carries [stokaro/ptah#5559](https://github.com/stokaro/ptah/pull/5559) |
 | Dev and shadow databases | A Ptah that carries [stokaro/ptah#5565](https://github.com/stokaro/ptah/pull/5565) |
 | The down file of a schema whose foreign key is a table constraint | A Ptah that carries [stokaro/ptah#5585](https://github.com/stokaro/ptah/pull/5585) |

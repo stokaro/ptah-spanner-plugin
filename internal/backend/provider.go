@@ -135,6 +135,10 @@ func providerFeatures() []string {
 		// A changed primary key reaches the planning service, which refuses
 		// it by name: Spanner cannot change a table's key.
 		provider.PrimaryKeyChangesFeature,
+		// The engine states how it builds an enum column: TEXT under a
+		// CHECK that lists the values, as Ptah's built-in Spanner engine
+		// built it; see enumColumns.
+		provider.EnumColumnsFeature,
 		// A kept table's changed foreign keys and CHECKs reach the planning
 		// service, which drops and adds them, and the host asks the provider
 		// whether a declared CHECK and the one Spanner keeps are one; see
@@ -257,6 +261,7 @@ func Description() *protocol.Description {
 			Aliases:       aliases(),
 			DefaultSchema: defaultSchema,
 			Identifiers:   identifierRules(),
+			EnumColumns:   enumColumns(),
 			ReleaseLines:  releaseLines(),
 			Features:      engineFeatures(),
 			LintRules:     migrationlint.Rules(),
@@ -278,6 +283,19 @@ func Description() *protocol.Description {
 			CommonObjects: commonobject.Support(),
 		}},
 	}
+}
+
+// enumColumns states how the engine builds a column a source declares as an
+// enum (schema.enum-columns, contract 25.31). Spanner's PostgreSQL interface
+// has no enum type: the emulator answers CREATE TYPE ... AS ENUM with
+// `Statement is not supported`. Ptah's built-in Spanner engine built the
+// column as TEXT under a CHECK that lists the values, named
+// `<table>_<column>_check`, and the host builds the same column for a host
+// that negotiates the feature, so the provider receives an ordinary column
+// with its CHECK. A host that does not keeps the enum a type of its own and
+// refuses it, as it does for every engine of contract 25.30.
+func enumColumns() *protocol.EnumColumns {
+	return &protocol.EnumColumns{Form: protocol.EnumColumns_CHECK, CheckType: "TEXT"}
 }
 
 // negotiatedFeatures is the engine's feature list as the host holds it: the
