@@ -181,6 +181,7 @@ func (s *session) finish(ctx context.Context, id string, record *transaction, ac
 	record.conn, record.tx = nil, nil
 	s.active = ""
 	s.closeReaders(id)
+	s.closeResults(id)
 }
 
 // rollbackTransactions rolls back every open transaction of a closing
