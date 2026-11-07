@@ -36,6 +36,62 @@ func ParseExpression(expression string) (policy Policy, found bool, err error) {
 	return Policy{Column: column, Interval: interval}, true, nil
 }
 
+// ParseClause reads the clause a SQL schema document writes after a table's
+// column list, such as `TTL INTERVAL '30 days' ON created_at`. The column is
+// one name, taken as written and without its double quotes, as Ptah reads a
+// column name in the same document; anything after it is refused.
+func ParseClause(clause string) (Policy, error) {
+	rest, ok := cutWord(strings.TrimSpace(clause), "TTL")
+	if !ok {
+		return Policy{}, fmt.Errorf("a row deletion policy clause begins with TTL")
+	}
+	if rest, ok = cutWord(strings.TrimSpace(rest), "INTERVAL"); !ok {
+		return Policy{}, fmt.Errorf("a row deletion policy clause is TTL INTERVAL '<interval>' ON <column>")
+	}
+	interval, rest, ok := cutQuoted(strings.TrimSpace(rest))
+	if !ok {
+		return Policy{}, fmt.Errorf("the row deletion policy's interval is not a quoted literal")
+	}
+	column, ok := cutWord(strings.TrimSpace(rest), "ON")
+	if !ok {
+		return Policy{}, fmt.Errorf("the row deletion policy's interval is not followed by ON")
+	}
+	name, ok := clauseColumn(strings.TrimSpace(column))
+	if !ok {
+		return Policy{}, fmt.Errorf("the row deletion policy names something other than one column after ON")
+	}
+	return Policy{Column: name, Interval: interval}, nil
+}
+
+// clauseColumn reads one column name: a double-quoted identifier with its
+// doubled quotes undone, or a word of letters, digits, underscores and dollar
+// signs that does not start with a digit or a dollar sign.
+func clauseColumn(text string) (string, bool) {
+	if strings.HasPrefix(text, `"`) {
+		body := text[1:]
+		var name strings.Builder
+		for i := 0; i < len(body); i++ {
+			switch {
+			case body[i] != '"':
+				name.WriteByte(body[i])
+			case i+1 < len(body) && body[i+1] == '"':
+				name.WriteByte('"')
+				i++
+			default:
+				return name.String(), i == len(body)-1 && name.Len() > 0
+			}
+		}
+		return "", false
+	}
+	for i, r := range text {
+		letter := r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z'
+		if !letter && (i == 0 || (r < '0' || r > '9') && r != '$') {
+			return "", false
+		}
+	}
+	return text, text != ""
+}
+
 // cutWord removes a leading keyword, whatever its letter case, when a space
 // or a quote follows it.
 func cutWord(text, keyword string) (string, bool) {

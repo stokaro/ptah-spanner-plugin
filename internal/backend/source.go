@@ -16,11 +16,11 @@ import (
 )
 
 // DecodeSource reads the row deletion policy each Go table directive, YAML
-// table entry and HCL platform block declares; see policysource. It reads no
-// file and needs no session. A document claims every model it enrolls
-// completely, so a Go or YAML table without a policy declares none; the host
-// reads an HCL document's claim at the tables that write the block alone. Any
-// refused fragment refuses the whole batch.
+// table entry, HCL platform block and SQL TTL clause declares; see
+// policysource. It reads no file and needs no session. A document claims
+// every model it enrolls completely, so a Go, YAML or SQL table without a
+// policy declares none; the host reads an HCL document's claim at the tables
+// that write the block alone. Any refused fragment refuses the whole batch.
 func (*Provider) DecodeSource(ctx context.Context, request *protocol.DecodeSourceRequest) (*protocol.DecodedSource, error) {
 	if err := provider.ValidateSourceRequest(Description(), request); err != nil {
 		return nil, runtime.ErrorWithReason(codes.InvalidArgument, err.Error())

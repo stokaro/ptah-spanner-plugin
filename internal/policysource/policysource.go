@@ -1,6 +1,7 @@
 // Package policysource reads and writes a Spanner table's row deletion policy
 // in the sources that declare one: a Go table directive, a YAML table entry
-// and an HCL table, in the spelling Ptah's built-in Spanner engine read.
+// and an HCL table, in the spelling Ptah's built-in Spanner engine read, and
+// it reads the TTL clause of a SQL CREATE TABLE.
 //
 //	//ptah:schema:table name="events" platform.spanner.row_deletion_column="created_at" platform.spanner.row_deletion_interval="30 days"
 //
@@ -15,6 +16,8 @@
 //	    override "row_deletion_interval" { value = "30 days" }
 //	  }
 //	}
+//
+//	CREATE TABLE events (...) TTL INTERVAL '30 days' ON created_at;
 //
 // The host lexes each source and sends the provider the values of the keys,
 // attributes and overrides the provider claims; this package owns the claims
@@ -92,9 +95,18 @@ func HCLPlatformBlock() *protocol.HCLSourceBlock {
 		Models: []string{rowdeletion.Kind}}
 }
 
+// SQLClause returns the provider's claim of the TTL clause of CREATE TABLE in
+// a SQL schema document, which declares the table's policy. The host reads
+// the rest of the document with its own grammar and sends the clause alone.
+func SQLClause() *protocol.SQLTableClause {
+	return &protocol.SQLTableClause{Words: []string{"TTL"}, Selector: "row-deletion-policy", Models: []string{rowdeletion.Kind}}
+}
+
 // Owns reports whether a fragment carries one of the provider's claims.
 func Owns(fragment *protocol.SourceFragment) bool {
 	switch {
+	case fragment.GetSqlTableClause() != nil:
+		return proto.Equal(fragment.GetSqlTableClause(), SQLClause())
 	case fragment.GetYamlKey() != nil:
 		return fragment.GetYamlKey().GetKey() == YAMLKey
 	case fragment.GetGoDirective() != nil:
@@ -120,11 +132,7 @@ func Decode(document *protocol.SourceDocument, fragment *protocol.SourceFragment
 		return nil, rowdeletion.Policy{}, fmt.Errorf("a row deletion policy belongs to a table the source declares")
 	}
 	label := strconv.Quote(table.GetName())
-	values, err := propertyValues(fragment)
-	if err != nil {
-		return nil, rowdeletion.Policy{}, fmt.Errorf("table %s: %w", label, err)
-	}
-	policy, err := policyOf(values)
+	policy, err := fragmentPolicy(fragment)
 	if err != nil {
 		return nil, rowdeletion.Policy{}, fmt.Errorf("table %s: %w", label, err)
 	}
@@ -132,6 +140,19 @@ func Decode(document *protocol.SourceDocument, fragment *protocol.SourceFragment
 		return nil, rowdeletion.Policy{}, err
 	}
 	return table, policy, nil
+}
+
+// fragmentPolicy reads the policy a fragment declares: a SQL TTL clause, or
+// the properties of a Go, YAML or HCL claim.
+func fragmentPolicy(fragment *protocol.SourceFragment) (rowdeletion.Policy, error) {
+	if fragment.GetSqlTableClause() != nil {
+		return rowdeletion.ParseClause(fragment.GetSql())
+	}
+	values, err := propertyValues(fragment)
+	if err != nil {
+		return rowdeletion.Policy{}, err
+	}
+	return policyOf(values)
 }
 
 // propertyValues reads the fragment's mapping into property names and their

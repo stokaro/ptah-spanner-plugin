@@ -196,6 +196,28 @@ WHERE table_name = 'schema_seeds' ORDER BY ordinal_position`), qt.DeepEquals, []
 	c.Assert(queryRows(c, address, `SELECT id FROM users ORDER BY id`), qt.DeepEquals, []string{"1"})
 }
 
+// After a seed run, a plan of a declaration that leaves the ledger out keeps
+// it: a read reports schema_seeds as the reserved seed ledger
+// (schema.reserved-seeds), so the host compares nothing of it. The built-in
+// and a provider without the reservation planned `DROP TABLE "schema_seeds"`
+// (stokaro/ptah#4204 S58).
+func TestHostKeepsTheSeedLedgerOutOfAPlanE2E(t *testing.T) {
+	c := testcheck.New(t)
+	skipBeforeContract2529(c)
+	address := freshDatabase(c)
+	const declared = "CREATE TABLE countries (code varchar(2) NOT NULL, name varchar(64) NOT NULL, PRIMARY KEY (code));\n"
+	output, err := applySQL(c, address, declared)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	seeds := writeFiles(c, map[string]string{"001_countries.all.sql": "INSERT INTO countries (code, name) VALUES ('DE', 'Germany');\n"})
+	output, err = hostCommand(c, "seed", "--db-url", address, "--env", "dev", "--seeds-dir", seeds)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	output, err = planSQL(c, address, declared)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, synced)
+	c.Assert(output, qt.Not(qt.Contains), "schema_seeds")
+	c.Assert(queryRows(c, address, `SELECT seed_path FROM schema_seeds`), qt.DeepEquals, []string{"001_countries.all.sql"})
+}
+
 // A file whose statement hits an existing key keeps nothing of itself and
 // records nothing. With --idempotent the conflict reads as data already
 // there: the file is rolled back whole and recorded. The built-in failed

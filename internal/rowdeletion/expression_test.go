@@ -60,3 +60,45 @@ func TestParseExpression_FailurePath(t *testing.T) {
 		})
 	}
 }
+
+// A SQL schema document writes the clause with its TTL keyword after the
+// column list; the column is one name, taken as written.
+func TestParseClause_HappyPath(t *testing.T) {
+	tests := []struct {
+		name, clause string
+		want         rowdeletion.Policy
+	}{
+		{name: "a bare column", clause: "TTL INTERVAL '30 days' ON created_at", want: rowdeletion.Policy{Column: "created_at", Interval: "30 days"}},
+		{name: "a mixed-case column as written", clause: "ttl interval '1 day' on CreatedAt", want: rowdeletion.Policy{Column: "CreatedAt", Interval: "1 day"}},
+		{name: "a quoted column", clause: "TTL INTERVAL '2 MONTHS'\n  ON \"a \"\"b\"\"\"", want: rowdeletion.Policy{Column: `a "b"`, Interval: "2 MONTHS"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			policy, err := rowdeletion.ParseClause(test.clause)
+			c.Assert(err, qt.IsNil)
+			c.Assert(policy, qt.Equals, test.want)
+		})
+	}
+}
+
+func TestParseClause_FailurePath(t *testing.T) {
+	tests := []struct{ name, clause, wantErr string }{
+		{name: "no TTL", clause: "INTERVAL '30 days' ON c", wantErr: `a row deletion policy clause begins with TTL`},
+		{name: "no INTERVAL", clause: "TTL '30 days' ON c", wantErr: `a row deletion policy clause is TTL INTERVAL '<interval>' ON <column>`},
+		{name: "an unquoted interval", clause: "TTL INTERVAL 30 ON c", wantErr: `the row deletion policy's interval is not a quoted literal`},
+		{name: "no ON", clause: "TTL INTERVAL '30 days' c", wantErr: `the row deletion policy's interval is not followed by ON`},
+		{name: "two words after ON", clause: "TTL INTERVAL '30 days' ON c d", wantErr: `the row deletion policy names something other than one column after ON`},
+		{name: "text after a quoted column", clause: `TTL INTERVAL '30 days' ON "c" x`, wantErr: `the row deletion policy names something other than one column after ON`},
+		{name: "an empty quoted column", clause: `TTL INTERVAL '30 days' ON ""`, wantErr: `the row deletion policy names something other than one column after ON`},
+		{name: "a column starting with a digit", clause: "TTL INTERVAL '30 days' ON 1c", wantErr: `the row deletion policy names something other than one column after ON`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			policy, err := rowdeletion.ParseClause(test.clause)
+			c.Assert(err, qt.ErrorMatches, test.wantErr)
+			c.Assert(policy, qt.Equals, rowdeletion.Policy{})
+		})
+	}
+}

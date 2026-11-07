@@ -1,8 +1,9 @@
 // Package commonobject carries the Spanner objects beyond tables that travel
-// on Ptah's common provider wire: views and sequences. The host compares and
-// orders them for every engine; this package says what Spanner holds of each,
-// gives a declaration in Spanner's spelling, and writes the statement each
-// change is made with, as Ptah's built-in Spanner engine wrote it.
+// on Ptah's common provider wire: schemas, views and sequences. The host
+// compares and orders them for every engine; this package says what Spanner
+// holds of each, gives a declaration in Spanner's spelling, and writes the
+// statement each change is made with, as Ptah's built-in Spanner engine wrote
+// it.
 //
 // Spanner's PostgreSQL interface stores no comment and has no role, grant or
 // materialized view, so the engine carries none of those, and the host
@@ -20,9 +21,13 @@ import (
 	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
 )
 
-// Support is the declaration of the kinds the spanner engine carries.
+// Support is the declaration of the kinds the spanner engine carries. A host
+// that does not negotiate schema.common-namespaces receives it without
+// SCHEMA.
 func Support() *protocol.CommonObjectSupport {
-	return &protocol.CommonObjectSupport{Kinds: []protocol.CommonObjectSupport_Kind{protocol.CommonObjectSupport_VIEW, protocol.CommonObjectSupport_SEQUENCE}}
+	return &protocol.CommonObjectSupport{Kinds: []protocol.CommonObjectSupport_Kind{
+		protocol.CommonObjectSupport_VIEW, protocol.CommonObjectSupport_SEQUENCE, protocol.CommonObjectSupport_SCHEMA,
+	}}
 }
 
 // Capabilities are the capability facts a session reports beside its own, as
@@ -147,9 +152,27 @@ func Render(change *protocol.CommonObjectChange) (string, error) {
 	case *protocol.CommonObjectChange_DropSequence:
 		sequence := operation.DropSequence
 		return "DROP SEQUENCE " + ddl.Name(sequence.GetSchema(), sequence.GetName()) + ";", nil
+	case *protocol.CommonObjectChange_CreateSchema:
+		return createSchema(operation.CreateSchema)
+	case *protocol.CommonObjectChange_DropSchema:
+		// Spanner drops an empty schema only (`Cannot drop schema app while
+		// it has dependencies`) and takes no CASCADE, which the host never
+		// asks for.
+		return "DROP SCHEMA " + ddl.Quote(operation.DropSchema.GetName()) + ";", nil
 	default:
-		return "", fmt.Errorf("the provider writes views and sequences, and Spanner has no %s", changeNoun(change))
+		return "", fmt.Errorf("the provider writes schemas, views and sequences, and Spanner has no %s", changeNoun(change))
 	}
+}
+
+// createSchema writes CREATE SCHEMA IF NOT EXISTS, the statement Ptah's
+// built-in Spanner engine wrote for a declared schema and for the schema of a
+// table it created. Spanner's PostgreSQL interface stores no comment, so a
+// schema that carries one is refused.
+func createSchema(creation *protocol.NamespaceCreation) (string, error) {
+	if creation.GetComment() != "" {
+		return "", fmt.Errorf("the comment on schema %s: Spanner's PostgreSQL interface stores no comment", ddl.Quote(creation.GetName()))
+	}
+	return ddl.CreateSchema(creation.GetName()), nil
 }
 
 // createView writes CREATE VIEW, or CREATE OR REPLACE VIEW for a replacement,

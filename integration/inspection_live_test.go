@@ -172,7 +172,8 @@ func TestInspectionSubprocess_ViewsAndSequences(t *testing.T) {
 // A read refuses an object it does not describe yet, with a reason naming it,
 // rather than leaving it out: the host would plan to create what a read leaves
 // out. A foreign key or a CHECK is refused to a host that does not negotiate
-// observed constraints, which this test's host does not.
+// observed constraints, and a filtered index to one that does not negotiate
+// index predicates, which this test's host does not.
 func TestInspectionSubprocess_FailurePath(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -191,7 +192,7 @@ func TestInspectionSubprocess_FailurePath(t *testing.T) {
 		{name: "a generated column", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, g bigint GENERATED ALWAYS AS (id * 2) STORED)`},
 			wantErr: `.*\(FailedPrecondition\): column "g" of table "public"\."t" is generated, which the provider does not describe yet`},
 		{name: "a filtered index", statements: []string{`CREATE TABLE t (id bigint PRIMARY KEY, n bigint)`, `CREATE INDEX nf ON t (n) WHERE n IS NOT NULL`},
-			wantErr: `.*\(FailedPrecondition\): index "nf" of table "public"\."t" has a WHERE filter, which the provider does not describe yet`},
+			wantErr: `.*\(FailedPrecondition\): index "nf" of table "public"\."t" has a WHERE filter, which needs a host that compares index predicates \(schema\.index-predicates\)`},
 		{name: "an interleaved table", statements: []string{`CREATE TABLE p (id bigint PRIMARY KEY)`,
 			`CREATE TABLE ch (id bigint, k bigint, PRIMARY KEY (id, k)) INTERLEAVE IN PARENT p`},
 			wantErr: `.*\(FailedPrecondition\): table "public"\."ch" is interleaved in a parent table, which the provider does not describe yet`},

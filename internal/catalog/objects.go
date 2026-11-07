@@ -109,3 +109,27 @@ WHERE sequence_schema = $1 ORDER BY sequence_name`, schema)
 	}
 	return sequences, nil
 }
+
+// systemSchemas are the schemas Spanner keeps for its catalogs. No statement
+// creates, changes or drops one, so a read lists none of them.
+var systemSchemas = []string{"information_schema", "pg_catalog", "spanner_sys"}
+
+// ReadSchemas reads the schemas a read covers, in name order: of the named
+// schemas, the ones the database holds, or, when names is empty, every schema
+// of the database but the ones Spanner keeps for its catalogs.
+func ReadSchemas(ctx context.Context, q Queryer, names []string) ([]string, error) {
+	rows, err := q.Query(ctx, `SELECT schema_name FROM information_schema.schemata ORDER BY schema_name`)
+	if err != nil {
+		return nil, err
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(held, func(schema string) bool {
+		if len(names) > 0 {
+			return !slices.Contains(names, schema)
+		}
+		return slices.Contains(systemSchemas, schema)
+	}), nil
+}

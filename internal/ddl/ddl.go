@@ -52,6 +52,9 @@ type Index struct {
 	// Storing are the columns the index stores beside its keys, which the
 	// PostgreSQL interface spells INCLUDE.
 	Storing []string
+	// Filter are the columns the index's WHERE clause requires to be NOT
+	// NULL, the only predicate Spanner creates an index with.
+	Filter []string
 }
 
 // ForeignKey is a foreign key constraint.
@@ -277,7 +280,8 @@ func alterColumn(schema, table, column, action string) string {
 
 // CreateIndex writes CREATE [UNIQUE] INDEX for index on table. A key names
 // its direction when it is descending and its NULLS ordering when it states
-// one; the stored columns follow INCLUDE.
+// one; the stored columns follow INCLUDE, and the filtered columns WHERE, each
+// as `<column> IS NOT NULL` joined by AND.
 func CreateIndex(schema, table string, index Index) (string, error) {
 	if index.Name == "" {
 		return "", fmt.Errorf("an index of table %s has no name", Name(schema, table))
@@ -309,6 +313,13 @@ func CreateIndex(schema, table string, index Index) (string, error) {
 	statement += "INDEX " + Quote(index.Name) + " ON " + Name(schema, table) + " (" + strings.Join(keys, ", ") + ")"
 	if len(index.Storing) > 0 {
 		statement += " INCLUDE (" + quoteAll(index.Storing) + ")"
+	}
+	if len(index.Filter) > 0 {
+		conditions := make([]string, len(index.Filter))
+		for i, column := range index.Filter {
+			conditions[i] = Quote(column) + " IS NOT NULL"
+		}
+		statement += " WHERE " + strings.Join(conditions, " AND ")
 	}
 	return statement + ";", nil
 }

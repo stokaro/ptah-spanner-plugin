@@ -122,6 +122,7 @@ Some of what these pages describe needs more:
 | Creating a table with a foreign key or a table `CHECK`, and `ptah db read` | A Ptah that carries [stokaro/ptah#5559](https://github.com/stokaro/ptah/pull/5559) |
 | Dev and shadow databases | A Ptah that carries [stokaro/ptah#5565](https://github.com/stokaro/ptah/pull/5565) |
 | The down file of a schema whose foreign key is a table constraint | A Ptah that carries [stokaro/ptah#5585](https://github.com/stokaro/ptah/pull/5585) |
+| Declared schemas, a SQL schema file's `TTL` clause, filtered indexes, and keeping the seed ledger out of a plan | Provider contract 25.29; an older Ptah refuses the first three and plans to drop the ledger, as [Clauses Ptah does not hand the provider](limitations.md#clauses-ptah-does-not-hand-the-provider) describes |
 
 ## Connecting
 
@@ -147,14 +148,20 @@ because the address can carry a password.
 
 ### The schemas a read covers
 
-A read covers the schemas Ptah asks for, and `public` when it asks for none.
-`--schemas` names more, such as `--schemas public,app` for a declaration that
-keeps tables in a schema `app`.
+A read covers the tables of the schemas Ptah asks for, and of `public` when it
+asks for none. Ptah asks for the schemas a declaration names, and `--schemas`
+names more, such as `--schemas public,app`.
+
+On a Ptah of provider contract 25.29 a read also lists the schemas themselves:
+the ones Ptah asks for that the database holds, or every schema but Spanner's
+catalogs (`information_schema`, `pg_catalog`, `spanner_sys`) when it asks for
+none. Ptah creates a declared schema the list lacks and never drops one, so
+`ptah db read` without `--schemas` writes a `CREATE SCHEMA` line for each
+schema and the tables of `public` alone.
 
 A `search_path` parameter in the address goes to PGAdapter as a session
 parameter, which PGAdapter accepts. The provider names the schema of every
-catalog query itself, so `search_path` does not change what it reads, and its
-own tests run with `search_path=public` pinned.
+catalog query itself, so `search_path` does not change what it reads.
 
 ## Dev and shadow databases
 

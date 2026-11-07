@@ -147,3 +147,54 @@ func TestClaims(t *testing.T) {
 	c.Assert(policysource.HCLPlatformBlock().GetType(), qt.Equals, "spanner")
 	c.Assert(policysource.HCLPlatformBlock().GetSite(), qt.Equals, protocol.HCLSourceBlock_TABLE_PLATFORM)
 }
+
+// sqlClause is a SQL document whose table-clause fragment carries text, bound
+// to the events table.
+func sqlClause(text string) (*protocol.SourceDocument, *protocol.SourceFragment) {
+	fragment := &protocol.SourceFragment{Id: "f", BindingId: "b", SqlTableClause: policysource.SQLClause(), Selector: policysource.SQLClause().GetSelector(),
+		Subject: events, Content: &protocol.SourceFragment_Sql{Sql: text}}
+	return &protocol.SourceDocument{Id: "d", Format: protocol.SourceDocument_SQL, Bindings: []*protocol.SourceBinding{{Id: "b", Object: events}},
+		Fragments: []*protocol.SourceFragment{fragment}}, fragment
+}
+
+// A SQL document's TTL clause, claimed by its opening word, declares the
+// policy of the table it belongs to, with the column as written.
+func TestDecode_SQLClause_HappyPath(t *testing.T) {
+	c := testcheck.New(t)
+	document, fragment := sqlClause("TTL INTERVAL '30 days' ON CreatedAt")
+	c.Assert(policysource.Owns(fragment), qt.IsTrue)
+	table, policy, err := policysource.Decode(document, fragment)
+	c.Assert(err, qt.IsNil)
+	c.Assert(table.GetName(), qt.Equals, "events")
+	c.Assert(policy, qt.Equals, rowdeletion.Policy{Column: "CreatedAt", Interval: "30 days"})
+}
+
+// A TTL clause Spanner would not take is refused with the table's name: a
+// malformed clause, and an interval Spanner refuses.
+func TestDecode_SQLClause_FailurePath(t *testing.T) {
+	tests := []struct{ name, clause, wantErr string }{
+		{name: "two words after ON", clause: "TTL INTERVAL '30 days' ON a b",
+			wantErr: `table "events": the row deletion policy names something other than one column after ON`},
+		{name: "an interval Spanner refuses", clause: "TTL INTERVAL 'soon' ON created_at", wantErr: `the row deletion policy of table "events": .*`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			document, fragment := sqlClause(test.clause)
+			table, policy, err := policysource.Decode(document, fragment)
+			c.Assert(err, qt.ErrorMatches, test.wantErr)
+			c.Assert(table, qt.IsNil)
+			c.Assert(policy, qt.Equals, rowdeletion.Policy{})
+		})
+	}
+}
+
+// The provider claims the TTL clause of CREATE TABLE for the row deletion
+// policy, and a claim of another word is not its own.
+func TestSQLClause(t *testing.T) {
+	c := testcheck.New(t)
+	c.Assert(policysource.SQLClause().GetWords(), qt.DeepEquals, []string{"TTL"})
+	c.Assert(policysource.SQLClause().GetModels(), qt.DeepEquals, []string{rowdeletion.Kind})
+	other := &protocol.SourceFragment{SqlTableClause: &protocol.SQLTableClause{Words: []string{"PARTITION"}, Selector: "x", Models: []string{rowdeletion.Kind}}}
+	c.Assert(policysource.Owns(other), qt.IsFalse)
+}

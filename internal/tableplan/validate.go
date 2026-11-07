@@ -28,12 +28,12 @@ func Validate(request *protocol.ValidateSchemaRequest) []Problem {
 	}
 	var problems []Problem
 	for _, table := range request.GetTables() {
-		problems = append(problems, validateTable(table.GetSubject(), table.GetDeclaration(), tables)...)
+		problems = append(problems, validateTable(table.GetSubject(), table.GetDeclaration(), tables, request.GetTargetFeatures())...)
 	}
 	return problems
 }
 
-func validateTable(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTable, tables map[tableKey]*protocol.DeclaredTable) []Problem {
+func validateTable(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTable, tables map[tableKey]*protocol.DeclaredTable, features []string) []Problem {
 	name := phrase(subject)
 	unsupported := func(kind, object, format string, args ...any) Problem {
 		return Problem{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: kind, Object: object, Message: fmt.Sprintf(format, args...)}
@@ -58,7 +58,7 @@ func validateTable(subject *protocol.ComparisonIdentity, table *protocol.Declare
 		problems = append(problems, validateColumn(subject, table, column)...)
 	}
 	for _, index := range table.GetIndexes() {
-		if reason := IndexRefusal(index); reason != "" {
+		if reason := IndexRefusal(index, features); reason != "" {
 			problems = append(problems, unsupported("index", index.GetName(), "index %q of table %s %s", index.GetName(), name, reason))
 		}
 	}

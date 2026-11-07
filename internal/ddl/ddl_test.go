@@ -180,6 +180,8 @@ func TestCreateIndex_HappyPath(t *testing.T) {
 			index: ddl.Index{Name: "t_i", Keys: []ddl.IndexKey{{Column: "a", Descending: true}, {Column: "b", Nulls: "FIRST"}, {Column: "c", Descending: true, Nulls: "LAST"}},
 				Storing: []string{"d", "e"}},
 			want: `CREATE INDEX "t_i" ON "app"."t" ("a" DESC, "b" NULLS FIRST, "c" DESC NULLS LAST) INCLUDE ("d", "e");`},
+		{name: "a filter", index: ddl.Index{Name: "t_f", Keys: []ddl.IndexKey{{Column: "a"}, {Column: "Bc"}}, Storing: []string{"d"}, Filter: []string{"Bc", "d"}},
+			want: `CREATE INDEX "t_f" ON "t" ("a", "Bc") INCLUDE ("d") WHERE "Bc" IS NOT NULL AND "d" IS NOT NULL;`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

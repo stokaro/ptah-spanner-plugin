@@ -74,6 +74,42 @@ func TestDescription_ReadsAndPlansConstraints(t *testing.T) {
 	}
 }
 
+// The four additions of contract 25.29: schemas on the common-object wire,
+// the TTL clause of a SQL CREATE TABLE, the reserved seed ledger and index
+// predicates. A host that lists every feature of the provider reads the
+// SCHEMA kind and the claim in the description.
+func TestDescription_OffersTheAdditionsOfContract2529(t *testing.T) {
+	c := testcheck.New(t)
+	additions := []string{provider.CommonNamespacesFeature, provider.SQLTableClausesFeature, provider.ReservedSeedsFeature, provider.IndexPredicatesFeature}
+	description := backend.Description()
+	for _, feature := range additions {
+		c.Assert(description.GetEngines()[0].GetFeatures(), qt.Contains, feature)
+		c.Assert(description.GetFeatures(), qt.Contains, feature)
+	}
+	listed := provider.NegotiatedDescription(description, description.GetFeatures())
+	c.Assert(provider.ValidateDescription(listed, nil), qt.IsNil)
+	engine := listed.GetEngines()[0]
+	c.Assert(engine.GetCommonObjects().GetKinds(), qt.Contains, protocol.CommonObjectSupport_SCHEMA)
+	c.Assert(engine.GetSqlSchema().GetMode(), qt.Equals, protocol.SQLSchemaDeclaration_FRAGMENTS)
+	c.Assert(engine.GetSqlSchema().GetTableClauses(), qt.HasLen, 1)
+	c.Assert(engine.GetSqlSchema().GetTableClauses()[0].GetWords(), qt.DeepEquals, []string{"TTL"})
+}
+
+// A host of an earlier contract receives the description without the SCHEMA
+// kind and without the TTL claim, and is planned as before them.
+func TestDescription_LeavesTheAdditionsOfContract2529ToAHostThatListsThem(t *testing.T) {
+	c := testcheck.New(t)
+	unlisted := provider.NegotiatedDescription(backend.Description(), []string{provider.CommonObjectsFeature})
+	c.Assert(provider.ValidateDescription(unlisted, nil), qt.IsNil)
+	engine := unlisted.GetEngines()[0]
+	for _, feature := range []string{provider.CommonNamespacesFeature, provider.SQLTableClausesFeature, provider.ReservedSeedsFeature, provider.IndexPredicatesFeature} {
+		c.Assert(engine.GetFeatures(), qt.Not(qt.Contains), feature)
+	}
+	c.Assert(engine.GetCommonObjects().GetKinds(), qt.DeepEquals,
+		[]protocol.CommonObjectSupport_Kind{protocol.CommonObjectSupport_VIEW, protocol.CommonObjectSupport_SEQUENCE})
+	c.Assert(engine.GetSqlSchema().GetTableClauses(), qt.HasLen, 0)
+}
+
 // Migrations keep their records through the provider: revision history, the
 // log and tags, transactions for the records, and a split of each body into
 // the statements Spanner runs one by one.

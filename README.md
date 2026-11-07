@@ -40,7 +40,14 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   NULLS ordering is stated only where it is not the default for its direction
   (`NULLS LAST` ascending, `NULLS FIRST` descending). Foreign keys and CHECKs
   reach a Ptah that reads constraints (provider contract 25.28); an older Ptah
-  gets the read refused for a table that holds one.
+  gets the read refused for a table that holds one. An index's `WHERE` clause
+  is stated as Spanner keeps it, `a IS NOT NULL AND b IS NOT NULL` in byte
+  order of the names, without the tests Spanner gives a unique index's keys by
+  itself, to a Ptah that compares index predicates (provider contract 25.29).
+  A read lists the schemas it covers to a Ptah that carries schemas (25.29):
+  the requested ones, or every schema but Spanner's catalogs when the request
+  names none. The seed ledger `schema_seeds` is reported as reserved to a Ptah
+  that negotiates it (25.29), so a plan never drops it.
 - **Views and sequences.** A read reports each view with its query as Spanner
   stores it, and each sequence with its counter start. A view is created with
   `CREATE VIEW`, replaced with `CREATE OR REPLACE VIEW` and dropped with `DROP
@@ -53,7 +60,8 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   stores. A sequence that skips a range is refused by the read.
 - **Refusals instead of omissions.** A read fails, with a reason that names the
   object, when the schema holds something the provider does not describe yet:
-  a generated or identity column, a filtered, search or interleaved index, or
+  a generated or identity column, a search or interleaved index, an index
+  with a `WHERE` clause for a Ptah that does not compare index predicates, or
   an interleaved table. Ptah plans
   to create what a read leaves out, so leaving such an object out would plan a
   change the database refuses.
@@ -63,11 +71,20 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
 - **Plans.** The provider owns the lifecycle of the engine's tables: Ptah hands
   it every table a plan creates, changes or drops, and it plans each statement
   itself, one action per statement as Spanner runs them.
-  - A table in a schema other than `public` follows `CREATE SCHEMA IF NOT
-    EXISTS`, written once per schema a plan creates tables in, as a YAML
-    source names the schema. A SQL or HCL source that declares a schema other
-    than `public` is refused by Ptah before the provider plans anything: the
-    host does not hand a provider a schema to create yet.
+  - A declared schema, and the schema of a created table, is created with
+    `CREATE SCHEMA IF NOT EXISTS` before the tables in it, as Ptah's built-in
+    Spanner engine created it. Ptah plans the creation from a read that lists
+    the schemas (provider contract 25.29), and the down file that `ptah
+    migrations generate` writes drops a declared schema with `DROP SCHEMA`
+    after the tables. A schema the declaration leaves out is kept. A
+    rehearsal on a dev database removes the schemas it created there. An older
+    Ptah refuses a declared schema, and the provider creates the schema of a
+    table it creates with `CREATE SCHEMA IF NOT EXISTS` itself.
+  - A filtered index is created with `WHERE "a" IS NOT NULL AND ...`, the one
+    predicate Spanner takes, and converges; a changed clause rebuilds the
+    index. A clause of another form, one on a column the index neither keys
+    nor stores, and one on a unique index's own key are refused by name. An
+    older Ptah gets every `WHERE` clause refused.
   - A created table is one `CREATE TABLE` with its key in key order, its
     defaults and its column `CHECK` constraints (an enum column is `TEXT` under
     a `CHECK` that lists its values), followed by its indexes and then by each
@@ -158,11 +175,12 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   that names a transaction reads in it and sees what it wrote.
 - **Seeds.** `ptah seed` runs each file and its entry in the ledger
   `schema_seeds`, the table and layout Ptah's built-in Spanner engine kept, in
-  one read-write transaction. A file that hits an existing key keeps nothing,
-  and `--idempotent` records it instead. A file holding a schema statement, a
-  transaction statement or a setting is refused before anything of it runs,
-  naming the line. A session with an open transaction runs no seed, because a
-  seed's transaction cannot join it.
+  one read-write transaction. A read reports the ledger as reserved, so `ptah
+  schema apply` never plans to drop it (provider contract 25.29). A file that
+  hits an existing key keeps nothing, and `--idempotent` records it instead. A
+  file holding a schema statement, a transaction statement or a setting is
+  refused before anything of it runs, naming the line. A session with an open
+  transaction runs no seed, because a seed's transaction cannot join it.
 - **Operator statements.** A statement an operator writes, such as a
   migration's `-- +ptah check` assertion, runs through the provider and
   returns its columns and rows in the forms the declared rows use; a type no
@@ -214,8 +232,11 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   `platform "spanner"` block. A Go or YAML table without a policy declares
   none; an HCL table without the block leaves the policy it holds alone. An
   export writes the policy back in the same spelling, and `ptah schema stats`
-  counts the tables that hold one. A SQL schema document's `TTL` clause is
-  refused: Ptah does not hand a provider a table clause of a SQL document yet.
+  counts the tables that hold one. A SQL schema document declares the policy
+  with Spanner's clause after the column list, `TTL INTERVAL '30 days' ON
+  created_at`, which the provider claims and reads (provider contract 25.29);
+  a table without the clause has none, and the SQL that `ptah db read` writes
+  replays. An older Ptah refuses the clause.
 
 Creating a table with a foreign key or a table `CHECK`, and writing a read as
 SQL with `ptah db read`, need a Ptah release with
@@ -263,8 +284,12 @@ engine is removed.
 ## Build and test
 
 The module pins the published SDK, `github.com/stokaro/ptah/provider-sdk`, by
-tag. It needs neither the Ptah source nor a local SDK checkout and has no
-`replace` directive.
+tag: v0.28.0, which speaks provider contract 25.30. It needs neither the Ptah
+source nor a local SDK checkout and has no `replace` directive. The provider
+starts on a Ptah of contract 25.27 or a later minor of 25, and serves an older
+minor without the additions it does not list;
+[What the provider needs from Ptah](docs/usage.md#what-the-provider-needs-from-ptah)
+says which service needs which.
 
 ```sh
 GOWORK=off go test -race ./...

@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/frankban/quicktest v1.14.6
 	github.com/jackc/pgx/v5 v5.12.0
-	github.com/stokaro/ptah/provider-sdk v0.25.0
+	github.com/stokaro/ptah/provider-sdk v0.28.0
 	google.golang.org/grpc v1.86.0-dev
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1

@@ -6,8 +6,10 @@
 // judges column types, defaults and CHECKs in Spanner's spelling and plans
 // every table statement), and renders and runs the statements it plans. It
 // reads and writes a table's row deletion policy in Go, YAML and HCL sources,
-// and compares, reverses and counts it. It also types, reads and writes the
-// rows a schema declares, and runs seed files with their ledger.
+// reads it in a SQL document's TTL clause, and compares, reverses and counts
+// it. It also types, reads and writes the rows a schema declares, runs seed
+// files with their ledger, and carries schemas, views and sequences on the
+// common-object wire.
 //
 // The provider describes what it reads completely or refuses the read: an
 // object it does not describe yet, such as an interleaved table, fails the
@@ -114,6 +116,10 @@ func providerFeatures() []string {
 		// ddl.IndexKey.StatedNulls.
 		provider.ObservedConstraintsFeature,
 		provider.IndexNullsOrderFeature,
+		// A read and table preparation state a filtered index's WHERE
+		// clause in the one spelling Spanner keeps, so the host compares
+		// the two exactly; see indexfilter.
+		provider.IndexPredicatesFeature,
 		// The provider owns the lifecycle of the engine's tables: it checks a
 		// declaration, states its key columns, predicts what a creation holds,
 		// judges columns in Spanner's spelling, and plans every statement
@@ -155,6 +161,10 @@ func providerFeatures() []string {
 		provider.ConvertValuesFeature,
 		provider.HCLSourceFeature,
 		provider.HCLPlatformFeature,
+		// A SQL schema document declares the policy with Spanner's TTL
+		// clause of CREATE TABLE, which the provider claims and reads; see
+		// policysource.SQLClause.
+		provider.SQLTableClausesFeature,
 		provider.CompareModelsFeature,
 		provider.ReverseChangesFeature,
 		provider.ReportCountsFeature,
@@ -175,6 +185,9 @@ func providerFeatures() []string {
 		provider.ReadRowsFeature,
 		provider.RenderRowWritesFeature,
 		provider.SeedsFeature,
+		// A read reports the seed ledger as reserved, so a plan never drops
+		// it; see reservedPurpose.
+		provider.ReservedSeedsFeature,
 		// Migration lint splits a migration as Spanner reads it and checks
 		// the SP rules; see lint.go.
 		provider.LintFeature,
@@ -190,6 +203,10 @@ func providerFeatures() []string {
 		// compares and orders them, the provider reads, spells and renders
 		// them; see commonobject.
 		provider.CommonObjectsFeature,
+		// Schemas travel on the same wire: a read lists them, the host plans
+		// their creation and removal, and the provider renders both; see
+		// commonobject.
+		provider.CommonNamespacesFeature,
 	}
 }
 
@@ -203,12 +220,23 @@ func engineFeatures() []string {
 }
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider, below the one the SDK it is built with speaks. The additions of
-// contract 25.28 that it uses are negotiated: a host of 25.27 lists none of
-// them, and gets reads that refuse a table's foreign keys and CHECKs, as it
-// did before, and comparisons and plans without them. The live tests run
-// against such a host and against one that negotiates them. An older host is
-// refused before a session opens.
+// provider, below the one the SDK it is built with speaks (25.30). The
+// additions of contracts 25.28 and 25.29 that it uses are negotiated, and a
+// host that lists none of them is served as before they existed:
+//
+//   - without observed constraints, a read refuses a table's foreign keys and
+//     CHECKs, and comparisons and plans carry none;
+//   - without common namespaces, a read lists no schema and the provider
+//     creates the schema of a table it creates in one of its own;
+//   - without SQL table clauses, a SQL document's TTL clause stays the host's
+//     to refuse;
+//   - without the reserved seed ledger, a read reports schema_seeds as a
+//     table;
+//   - without index predicates, a read and a declaration of a filtered index
+//     are refused.
+//
+// The live tests run against such a host and against one that negotiates
+// them. An older host is refused before a session opens.
 const minimumContract = 27
 
 // Description declares the provider and the spanner engine.
@@ -239,7 +267,9 @@ func Description() *protocol.Description {
 			YamlSourceKeys:     policysource.YAMLKeys(),
 			GoSourceDirectives: policysource.GoDirectives(),
 			HclSource:          &protocol.HCLSourceDeclaration{Blocks: []*protocol.HCLSourceBlock{policysource.HCLPlatformBlock()}},
-			CommonObjects:      commonobject.Support(),
+			SqlSchema: &protocol.SQLSchemaDeclaration{Mode: protocol.SQLSchemaDeclaration_FRAGMENTS,
+				TableClauses: []*protocol.SQLTableClause{policysource.SQLClause()}},
+			CommonObjects: commonobject.Support(),
 		}},
 	}
 }

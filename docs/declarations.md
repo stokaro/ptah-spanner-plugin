@@ -16,6 +16,7 @@ sourceOfTruth:
   - internal/rowdeletion
   - internal/commonobject
   - internal/catalog
+  - internal/indexfilter
   - internal/rowdata
   - stokaro/ptah#4204
 generated: false
@@ -233,10 +234,42 @@ it out.
 
 These index declarations are refused:
 
-- a `WHERE` filter (`has a WHERE filter, which the provider does not create yet`);
 - an access method, an operator class, storage parameters, `NULLS NOT DISTINCT`
   or an invisible index, none of which a Spanner index has;
 - a key that is an expression or a column prefix.
+
+### Filtered indexes
+
+Spanner creates an index with one kind of `WHERE` clause: `NOT NULL` tests,
+joined by `AND`, on columns the index keys or stores. A declared clause is
+written that way, each column once and in byte order of the names:
+
+```sql
+CREATE INDEX t_cd ON t (c, d) WHERE d IS NOT NULL AND c IS NOT NULL;
+```
+
+```sql
+CREATE INDEX "t_cd" ON "t" ("c", "d") WHERE "c" IS NOT NULL AND "d" IS NOT NULL;
+```
+
+A read states the clause as Spanner keeps it, `c IS NOT NULL AND d IS NOT
+NULL`, and the declaration is compared in the same spelling, so the index
+converges whatever order and quoting the declaration uses. A changed clause
+drops the index and creates it again. `ptah db read` writes the clause.
+
+Spanner gives a unique index a `NOT NULL` test on each of its key columns by
+itself, so a read leaves those tests out, and a unique index takes a clause on
+the columns it stores alone. These clauses are refused, naming the index:
+
+- a test other than `IS NOT NULL`, such as `WHERE c > 0`
+  (`has a WHERE filter Spanner cannot create: Spanner takes only <column> IS NOT NULL tests joined by AND`);
+- a column the index neither keys nor stores
+  (`filters on column "d", which the index neither keys nor stores`);
+- a unique index's own key (`is unique and filters on its key "c"`).
+
+Filtered indexes need a Ptah of provider contract 25.29, which compares the
+clause. An older Ptah gets every `WHERE` clause refused, in a declaration and in
+a read.
 
 The index Spanner builds for a foreign key, on either table, is Spanner's. A
 read leaves it out, so a plan never drops it and an export never writes it.
@@ -285,8 +318,9 @@ Spanner has no enum type. A column declared with enum values is created as
 ## Row deletion policies
 
 Spanner deletes a row once an interval has passed since the time a
-`timestamptz` column holds. A table declares the policy with two properties,
-`row_deletion_column` and `row_deletion_interval`.
+`timestamptz` column holds. A Go, YAML or HCL table declares the policy with
+two properties, `row_deletion_column` and `row_deletion_interval`, and a SQL
+schema file with Spanner's own clause.
 
 In Go, they are `platform.spanner` attributes of the table directive:
 
@@ -339,6 +373,20 @@ table "sessions" {
 }
 ```
 
+In a SQL schema file, the policy is the clause after the table's column list:
+
+```sql
+CREATE TABLE sessions (
+  id bigint PRIMARY KEY,
+  created_at timestamptz NOT NULL
+) TTL INTERVAL '30 days' ON created_at;
+```
+
+The column after `ON` is one name, taken as written, as the file names its
+columns. A clause the provider cannot read is refused while the file is read,
+at the clause's line and column, such as
+`table clause of sessions: provider decode source failed (InvalidArgument): the row deletion policy of table "sessions": the interval is not a whole number of days, which Spanner refuses`.
+
 A created table carries the policy after its column list:
 
 ```sql
@@ -368,16 +416,18 @@ anything runs:
 - a column that is not `timestamptz`;
 - a plan that drops the column a kept policy counts from.
 
-A Go or YAML table without the properties declares no policy, so a plan drops
-a policy the table holds. An HCL table without the `platform "spanner"` block
+A Go or YAML table without the properties, and a SQL table without the clause,
+declares no policy, so a plan drops a policy the table holds. An HCL table without the `platform "spanner"` block
 says nothing about the policy, and the table keeps the one it holds.
 `ptah schema inspect` and `ptah db read` write a policy back with the interval
 in the spelling Spanner stores, and `ptah schema stats` counts the tables that
 hold one as `ptah_schema_spanner_row_deletion_policy_tables`.
 
-A SQL schema file that writes the `TTL INTERVAL ... ON` clause is refused, as
+The SQL clause needs a Ptah of provider contract 25.29, which hands it to the
+provider; the SQL that `ptah db read` writes then replays and converges. An
+older Ptah refuses the clause, as
 [Clauses Ptah does not hand the provider](limitations.md#clauses-ptah-does-not-hand-the-provider)
-describes. Declare the policy in Go, YAML or HCL.
+describes; declare the policy in Go, YAML or HCL there.
 
 ## Views
 
@@ -422,22 +472,37 @@ sequence that skips a range of values.
 
 ## Schemas
 
-A table in a schema other than `public` is created after `CREATE SCHEMA IF NOT
-EXISTS`, written once for each schema a plan creates tables in:
+A declared schema, and the schema of a table a plan creates, is created with
+`CREATE SCHEMA IF NOT EXISTS` before the tables in it, as Ptah's built-in
+Spanner engine created it:
+
+```sql
+CREATE SCHEMA es_app;
+CREATE TABLE app.t (id bigint NOT NULL, PRIMARY KEY (id));
+```
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS "app";
+CREATE SCHEMA IF NOT EXISTS "es_app";
 CREATE TABLE "app"."t" (
   "id" bigint PRIMARY KEY NOT NULL
 );
 ```
 
-A Go table with `schema="app"`, a YAML table with `schema: app` and a SQL
-`CREATE TABLE app.t` without `CREATE SCHEMA` all plan this way. Read those
-schemas with `--schemas`, such as `--schemas public,app`. A schema declared as
-an object of its own is refused, as
+A SQL `CREATE SCHEMA`, a Go `//ptah:schema:schema` directive and an HCL
+`schema` block declare a schema, and a schema with nothing in it is created
+too. A read lists the schemas, so a schema the database holds is not created
+again, and a schema the declaration leaves out is kept, whatever it holds. The
+down file that `ptah migrations generate` writes drops a declared schema with
+`DROP SCHEMA "es_app";` after the tables, without `CASCADE`. A rehearsal on a
+dev database removes the schemas it created there.
+
+This needs a Ptah of provider contract 25.29. An older Ptah refuses a schema
+declared as an object of its own, as
 [Clauses Ptah does not hand the provider](limitations.md#clauses-ptah-does-not-hand-the-provider)
-describes.
+describes, and the provider creates the schema of a Go, YAML or SQL table in a
+schema of its own with `CREATE SCHEMA IF NOT EXISTS` itself. Read such tables
+with `--schemas`, such as `--schemas public,app`.
 
 ## Declared rows
 

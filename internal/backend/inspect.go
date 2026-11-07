@@ -15,10 +15,12 @@ import (
 	"github.com/stokaro/ptah-spanner-plugin/internal/catalog"
 	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-spanner-plugin/internal/history"
+	"github.com/stokaro/ptah-spanner-plugin/internal/indexfilter"
 	"github.com/stokaro/ptah-spanner-plugin/internal/locktable"
 	"github.com/stokaro/ptah-spanner-plugin/internal/metadata"
 	"github.com/stokaro/ptah-spanner-plugin/internal/ownedtable"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/seedledger"
 )
 
 // Inspect reads the base tables of the requested schemas, or of the default
@@ -57,13 +59,20 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 	}
 	snapshot.Coverage.Kinds = []*protocol.ModelKindCoverage{policyCoverage(current.database, request.GetSchemas())}
 	constraints := slices.Contains(snapshot.GetTargetFeatures(), provider.ObservedConstraintsFeature)
+	seeds := slices.Contains(snapshot.GetTargetFeatures(), provider.ReservedSeedsFeature)
+	predicates := slices.Contains(snapshot.GetTargetFeatures(), provider.IndexPredicatesFeature)
 	for _, table := range tables {
 		if held := table.Constraints; !constraints && len(held) > 0 {
 			return nil, runtime.ErrorWithReason(codes.FailedPrecondition, fmt.Sprintf(
 				"table %q.%q has the %s constraint %q, which needs a host that reads constraints (schema.observed-constraints)",
 				table.Schema, table.Name, held[0].Type, held[0].Name))
 		}
-		if purpose := reservedPurpose(table); purpose != protocol.ReservedObject_PURPOSE_UNSPECIFIED {
+		if index := filteredIndex(table); !predicates && index != "" {
+			return nil, runtime.ErrorWithReason(codes.FailedPrecondition, fmt.Sprintf(
+				"index %q of table %q.%q has a WHERE filter, which needs a host that compares index predicates (%s)",
+				index, table.Schema, table.Name, provider.IndexPredicatesFeature))
+		}
+		if purpose := reservedPurpose(table, seeds); purpose != protocol.ReservedObject_PURPOSE_UNSPECIFIED {
 			identity := &protocol.Reference{Engine: engineID, Database: current.database, Schema: table.Schema, Kind: "table", Name: table.Name}
 			snapshot.ReservedObjects = append(snapshot.ReservedObjects, &protocol.ReservedObject{
 				Object: identity, NormalizedObject: proto.CloneOf(identity), Purpose: purpose, ConflictKinds: []string{"table"},
@@ -83,7 +92,7 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		}
 		snapshot.Tables = append(snapshot.Tables, observed)
 	}
-	if snapshot.CommonObjects, err = commonObjects(ctx, current, schemas); err != nil {
+	if snapshot.CommonObjects, err = commonObjects(ctx, current, schemas, request.GetSchemas()); err != nil {
 		return nil, err
 	}
 	// A read narrowed to schemas says which namespace each selector names.
@@ -102,7 +111,9 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 
 // observedTable is a read table as the protocol carries it: each column as
 // one complete observation, the primary key in key order, the secondary
-// indexes, and the foreign keys and CHECKs. A CHECK lists no columns, which
+// indexes with their WHERE clauses in the spelling Spanner keeps, and the
+// foreign keys and CHECKs. A filtered index reaches a host that compares
+// index predicates alone; Inspect refuses one for any other host. A CHECK lists no columns, which
 // the protocol leaves to the server to know. Names compare exactly, so the
 // normalized identity is the identity.
 func observedTable(database string, table catalog.Table) *protocol.Table {
@@ -132,7 +143,7 @@ func observedTable(database string, table catalog.Table) *protocol.Table {
 	}
 	for _, index := range table.Indexes {
 		observed := &protocol.ObservedIndex{Name: index.Name, TableName: table.Name, Schema: table.Schema, Unique: index.Unique,
-			IncludeColumns: append([]string(nil), index.Storing...)}
+			IncludeColumns: append([]string(nil), index.Storing...), Condition: indexfilter.Spelling(index.Filter)}
 		for _, key := range index.Keys {
 			observed.Columns = append(observed.Columns, key.Column)
 			observed.Parts = append(observed.Parts, &protocol.CapturedIndexPart{Column: key.Column, Descending: key.Descending, Nulls: key.Nulls})
@@ -154,13 +165,27 @@ func observedTable(database string, table catalog.Table) *protocol.Table {
 	return result
 }
 
+// filteredIndex names the first index of a table that has a WHERE filter, or
+// returns the empty string.
+func filteredIndex(table catalog.Table) string {
+	for _, index := range table.Indexes {
+		if len(index.Filter) > 0 {
+			return index.Name
+		}
+	}
+	return ""
+}
+
 // reservedPurpose is what the provider keeps in a table a read leaves out of
 // the schema: its lock table, or the revision table, migration log or tag
 // table of Ptah's migrator under their default names and in exactly their
 // layouts. Ptah's built-in Spanner engine left those three names out of every
 // read, so a plan never dropped the record of the migrations a database ran.
-// Any other table is the user's, and is read as one.
-func reservedPurpose(table catalog.Table) protocol.ReservedObject_Purpose {
+// For a host that negotiated the reserved seed ledger (seeds), the seed
+// ledger in exactly its layout is reserved too, so a plan never drops the
+// record of the seed files a database ran; a host that did not reads it as a
+// table. Any other table is the user's, and is read as one.
+func reservedPurpose(table catalog.Table, seeds bool) protocol.ReservedObject_Purpose {
 	columns := make([]ownedtable.Column, len(table.Columns))
 	for i, column := range table.Columns {
 		columns[i] = ownedtable.Column{Name: column.Name, Type: column.SpannerType, Nullable: column.Nullable}
@@ -174,6 +199,8 @@ func reservedPurpose(table catalog.Table) protocol.ReservedObject_Purpose {
 		return protocol.ReservedObject_LOG
 	case table.Name == metadata.TagsTable && metadata.Tags(table.Schema, table.Name).Holds(columns, table.PrimaryKey):
 		return protocol.ReservedObject_TAG
+	case seeds && table.Schema == defaultSchema && table.Name == seedledger.Table && seedledger.Definition().Holds(columns, table.PrimaryKey):
+		return protocol.ReservedObject_SEEDS
 	}
 	return protocol.ReservedObject_PURPOSE_UNSPECIFIED
 }
@@ -226,13 +253,22 @@ func qualifiedName(table catalog.Table) string {
 // not exist in those schemas. A host that does not carry common objects gets
 // none, and a read that holds one is refused for it rather than left
 // without it: the host would plan as if the object did not exist.
-func commonObjects(ctx context.Context, current *session, schemas []string) (*protocol.ObservedCommonObjects, error) {
+//
+// A host that carries schemas (schema.common-namespaces) also gets the
+// schemas of the read's scope, completely: each requested schema the
+// database holds, or, for a read that requests none, every schema of the
+// database but Spanner's own. The tables of such a read are the default
+// schema's, and the schemas are all of them: the host only ever adds a
+// schema a declaration names and a read lacks, so listing one whose tables
+// it did not read plans nothing in it, and the host's cleanup of a dev
+// database reads this list to find the schemas a run created.
+func commonObjects(ctx context.Context, current *session, schemas, requested []string) (*protocol.ObservedCommonObjects, error) {
 	views, err := catalog.ReadViews(ctx, current.conn, schemas)
 	if err == nil {
 		var sequences []catalog.Sequence
 		if sequences, err = catalog.ReadSequences(ctx, current.conn, schemas); err == nil {
 			if slices.Contains(provider.HostFeatures(ctx), provider.CommonObjectsFeature) {
-				return observedCommonObjects(current.database, views, sequences), nil
+				return carriedCommonObjects(ctx, current, views, sequences, requested)
 			}
 			err = uncarried(views, sequences)
 		}
@@ -244,6 +280,28 @@ func commonObjects(ctx context.Context, current *session, schemas []string) (*pr
 		return nil, runtime.ErrorWithReason(codes.FailedPrecondition, unsupported.Reason)
 	}
 	return nil, callFailed(ctx, "the provider could not read the Spanner catalog")
+}
+
+// carriedCommonObjects is the common objects of a read for a host that
+// carries them, with the schemas for a host that carries those too.
+func carriedCommonObjects(ctx context.Context, current *session, views []catalog.View, sequences []catalog.Sequence,
+	requested []string,
+) (*protocol.ObservedCommonObjects, error) {
+	result := observedCommonObjects(current.database, views, sequences)
+	if !slices.Contains(negotiatedFeatures(ctx), provider.CommonNamespacesFeature) {
+		return result, nil
+	}
+	namespaces, err := catalog.ReadSchemas(ctx, current.conn, requested)
+	if err != nil {
+		return nil, err
+	}
+	result.Coverage = append(result.Coverage, &protocol.CommonObjectCoverage{Kind: protocol.CommonObjectSupport_SCHEMA,
+		Knowledge: &protocol.ModelKnowledge{State: protocol.ModelKnowledge_COMPLETE}})
+	for _, name := range namespaces {
+		result.Namespaces = append(result.Namespaces, &protocol.ObservedNamespace{
+			Identity: &protocol.Reference{Engine: engineID, Database: current.database, Kind: provider.NamespaceKind, Name: name}})
+	}
+	return result, nil
 }
 
 func observedCommonObjects(database string, views []catalog.View, sequences []catalog.Sequence) *protocol.ObservedCommonObjects {

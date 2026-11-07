@@ -7,9 +7,11 @@ import (
 	"strings"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/checkexpr"
 	"github.com/stokaro/ptah-spanner-plugin/internal/coltype"
+	"github.com/stokaro/ptah-spanner-plugin/internal/indexfilter"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableop"
 )
 
@@ -147,14 +149,19 @@ func createTable(subject *protocol.ComparisonIdentity, table *protocol.DeclaredT
 }
 
 // indexOperation is the operation that creates a declared index: its keys
-// with their direction and NULLS ordering, and its stored columns. An index
+// with their direction and NULLS ordering, its stored columns, and the columns
+// its WHERE clause requires to be NOT NULL. An index
 // Spanner's PostgreSQL interface cannot create, or one that states a setting
 // the provider does not write, is refused by name.
-func indexOperation(declared *protocol.DeclaredIndex) (tableop.Operation, error) {
-	if reason := IndexRefusal(declared); reason != "" {
+func indexOperation(declared *protocol.DeclaredIndex, features []string) (tableop.Operation, error) {
+	if reason := IndexRefusal(declared, features); reason != "" {
 		return tableop.Operation{}, fmt.Errorf("index %q %s", declared.GetName(), reason)
 	}
 	index := &tableop.Index{Name: declared.GetName(), Unique: declared.GetUnique(), Storing: slices.Clone(declared.GetIncludeColumns())}
+	if strings.TrimSpace(declared.GetCondition()) != "" {
+		// IndexRefusal has read the clause.
+		index.Filter, _ = indexfilter.Parse(declared.GetCondition())
+	}
 	if len(declared.GetParts()) > 0 {
 		for _, part := range declared.GetParts() {
 			index.Keys = append(index.Keys, tableop.IndexKey{Column: part.GetColumn(), Descending: part.GetDescending(), Nulls: strings.ToUpper(part.GetNulls())})
@@ -168,11 +175,21 @@ func indexOperation(declared *protocol.DeclaredIndex) (tableop.Operation, error)
 }
 
 // IndexRefusal names what puts a declared index outside what the provider
-// creates, or returns the empty string.
-func IndexRefusal(declared *protocol.DeclaredIndex) string {
+// creates, or returns the empty string. A WHERE clause needs a host whose
+// target features hold index predicates (schema.index-predicates), since a
+// host that cannot compare the clause would rebuild the index on every plan,
+// and it is refused unless Spanner creates an index with it; see
+// filterRefusal.
+func IndexRefusal(declared *protocol.DeclaredIndex, features []string) string {
+	if strings.TrimSpace(declared.GetCondition()) != "" {
+		if !slices.Contains(features, provider.IndexPredicatesFeature) {
+			return "has a WHERE filter, which needs a host that compares index predicates (" + provider.IndexPredicatesFeature + ")"
+		}
+		if reason := filterRefusal(declared); reason != "" {
+			return reason
+		}
+	}
 	switch {
-	case strings.TrimSpace(declared.GetCondition()) != "":
-		return "has a WHERE filter, which the provider does not create yet"
 	case strings.TrimSpace(declared.GetType()) != "":
 		return fmt.Sprintf("uses the access method %q; a Spanner index has none", declared.GetType())
 	case strings.TrimSpace(declared.GetOperator()) != "":
@@ -194,6 +211,35 @@ func IndexRefusal(declared *protocol.DeclaredIndex) string {
 			return fmt.Sprintf("has a key on %q with an operator class or a prefix; a Spanner index has neither", part.GetColumn())
 		case part.GetNulls() != "" && !slices.Contains([]string{"FIRST", "LAST"}, strings.ToUpper(part.GetNulls())):
 			return fmt.Sprintf("has a key on %q with the NULLS ordering %q", part.GetColumn(), part.GetNulls())
+		}
+	}
+	return ""
+}
+
+// filterRefusal names what puts a declared WHERE clause outside what Spanner
+// creates an index with: anything but NOT NULL tests joined by AND, a column
+// that is not one of the index's keys or stored columns, and, on a unique
+// index, a key column. Spanner gives a unique index a NOT NULL test on every
+// key column of its own accord, so such a test adds nothing, and a read
+// cannot tell it from the one Spanner added.
+func filterRefusal(declared *protocol.DeclaredIndex) string {
+	filtered, err := indexfilter.Parse(declared.GetCondition())
+	if err != nil {
+		return fmt.Sprintf("has a WHERE filter Spanner cannot create: %v", err)
+	}
+	keys := slices.Clone(declared.GetFields())
+	if len(declared.GetParts()) > 0 {
+		keys = keys[:0]
+		for _, part := range declared.GetParts() {
+			keys = append(keys, part.GetColumn())
+		}
+	}
+	for _, column := range filtered {
+		switch {
+		case declared.GetUnique() && slices.Contains(keys, column):
+			return fmt.Sprintf("is unique and filters on its key %q; Spanner leaves the rows whose key holds NULL out of a unique index by itself, so remove the test", column)
+		case !slices.Contains(keys, column) && !slices.Contains(declared.GetIncludeColumns(), column):
+			return fmt.Sprintf("filters on column %q, which the index neither keys nor stores; Spanner filters an index on its own columns only", column)
 		}
 	}
 	return ""

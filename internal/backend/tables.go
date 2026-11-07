@@ -15,49 +15,83 @@ import (
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/coltype"
 	"github.com/stokaro/ptah-spanner-plugin/internal/ddl"
+	"github.com/stokaro/ptah-spanner-plugin/internal/indexfilter"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tableplan"
 )
 
 // PrepareTables states which declared columns are key columns: the table's
 // key list, then each column marked primary, in key order. Where the host
 // negotiated the index NULLS order, it also states the NULLS order of each
-// key part of each declared index, in the form a read states a held one. It
-// reads no database and changes nothing else of a declaration.
+// key part of each declared index, and where it negotiated index predicates,
+// each declared index's WHERE clause, each in the form a read states a held
+// one. It reads no database and changes nothing else of a declaration.
 func (*Provider) PrepareTables(ctx context.Context, request *protocol.PrepareTablesRequest) (*protocol.PreparedTables, error) {
 	result := &protocol.PreparedTables{Complete: true}
-	nulls := slices.Contains(request.GetTargetFeatures(), provider.IndexNullsOrderFeature)
+	states := indexStatements{nulls: slices.Contains(request.GetTargetFeatures(), provider.IndexNullsOrderFeature),
+		predicates: slices.Contains(request.GetTargetFeatures(), provider.IndexPredicatesFeature)}
 	for _, table := range request.GetTables() {
 		if err := ctx.Err(); err != nil {
 			return nil, status.FromContextError(err).Err()
 		}
 		prepared := &protocol.PreparedTable{Subject: proto.CloneOf(table.GetSubject()), ColumnPrimaryKeysPrepared: true,
 			ColumnPrimaryKeys: tableplan.PrimaryKey(table.GetDesired())}
-		if nulls {
-			prepared.Indexes = preparedIndexes(table.GetDesired())
+		if states.nulls || states.predicates {
+			prepared.Indexes = states.prepare(table.GetDesired())
 		}
 		result.Tables = append(result.Tables, prepared)
 	}
 	return result, nil
 }
 
-// preparedIndexes states the NULLS order of each key part of each index a
-// table declares, in declaration order: FIRST or LAST where it differs from
-// Spanner's default for the part's direction, and empty where it is the
-// default; see ddl.IndexKey.StatedNulls. A key listed as fields is in the default
-// order. Ptah's built-in Spanner engine compared the orders by the same rule.
-func preparedIndexes(table *protocol.DeclaredTable) []*protocol.PreparedIndex {
+// indexStatements are what table preparation states of each declared index,
+// as the host negotiated them: the NULLS orders, the WHERE clause, or both.
+type indexStatements struct {
+	nulls, predicates bool
+}
+
+// prepare states, for each index a table declares in declaration order, what
+// the host negotiated:
+//
+//   - with nulls, the NULLS order of each key part: FIRST or LAST where it
+//     differs from Spanner's default for the part's direction, and empty where
+//     it is the default; see ddl.IndexKey.StatedNulls. A key listed as fields
+//     is in the default order. Ptah's built-in Spanner engine compared the
+//     orders by the same rule.
+//   - with predicates, the WHERE clause in the spelling Spanner keeps; see
+//     preparedCondition.
+func (s indexStatements) prepare(table *protocol.DeclaredTable) []*protocol.PreparedIndex {
 	indexes := make([]*protocol.PreparedIndex, 0, len(table.GetIndexes()))
 	for _, index := range table.GetIndexes() {
 		prepared := &protocol.PreparedIndex{Name: index.GetName()}
-		if len(index.GetParts()) == 0 {
+		if s.nulls && len(index.GetParts()) == 0 {
 			prepared.Nulls = make([]string, len(index.GetFields()))
 		}
 		for _, part := range index.GetParts() {
-			prepared.Nulls = append(prepared.Nulls, ddl.IndexKey{Descending: part.GetDescending(), Nulls: part.GetNulls()}.StatedNulls())
+			if s.nulls {
+				prepared.Nulls = append(prepared.Nulls, ddl.IndexKey{Descending: part.GetDescending(), Nulls: part.GetNulls()}.StatedNulls())
+			}
+		}
+		if s.predicates {
+			prepared.Condition = preparedCondition(index.GetCondition())
 		}
 		indexes = append(indexes, prepared)
 	}
 	return indexes
+}
+
+// preparedCondition is a declared WHERE clause in the spelling Spanner keeps
+// it in (indexfilter.Spelling). A clause Spanner creates no index with is
+// stated as written: schema validation refuses it before a plan is made, and
+// the host needs a clause stated exactly when the declaration has one.
+func preparedCondition(condition string) string {
+	if strings.TrimSpace(condition) == "" {
+		return ""
+	}
+	columns, err := indexfilter.Parse(condition)
+	if err != nil {
+		return strings.TrimSpace(condition)
+	}
+	return indexfilter.Spelling(columns)
 }
 
 // ProjectTableCreations predicts what a read reports for each declared table
