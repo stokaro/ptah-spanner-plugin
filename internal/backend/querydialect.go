@@ -13,6 +13,14 @@ import protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 // at the parity reference, and a test compares the two. A host that builds in
 // a Spanner engine keeps its own descriptor and reads none of this; the
 // declaration takes effect once the provider is the only Spanner engine.
+//
+// The lexical rules are measured, not inherited: the built-in descriptor
+// stated escape strings alone. Measured on pgadapter-emulator v0.56.2 with
+// psql -c, Spanner's PostgreSQL interface reads E'it\'s' as it's, a nested
+// block comment as one comment, 'a' and 'b' on the next line as ab (a --
+// comment between them too), E'a' and 'b\'c' on the next line as ab'c, and
+// U&'d!0061t' UESCAPE '!' as dat, as PostgreSQL does. The host reads a SQL
+// schema document of the engine with them (contract 25.34, query.lexical).
 func queryDialect() *protocol.QueryDialect {
 	return &protocol.QueryDialect{
 		Placeholder: "dollar",
@@ -25,5 +33,6 @@ func queryDialect() *protocol.QueryDialect {
 			"offset_without_limit":     true,
 			"returning_clause":         true,
 		},
+		Lexical: &protocol.QueryLexical{EscapeStrings: true, ContinuedStrings: true, UnicodeStrings: true, NestedComments: true},
 	}
 }
