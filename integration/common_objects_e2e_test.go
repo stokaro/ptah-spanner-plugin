@@ -5,6 +5,7 @@ package integration_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -151,4 +152,62 @@ func TestHostRemovesATableWithItsIndexAndViewE2E(t *testing.T) {
 	output, err = planSQL(c, address, kept)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Contains, synced)
+}
+
+// viewShapes are views of a table t and a table u, each with its query as a
+// schema document declares it.
+const viewShapes = `CREATE TABLE t (id bigint PRIMARY KEY, name varchar(20), flag boolean);
+CREATE TABLE u (id bigint PRIMARY KEY, t_id bigint, label text);
+CREATE VIEW v_plain AS SELECT id, name FROM t;
+CREATE VIEW v_spelled AS select "id", name from t;
+CREATE VIEW v_count AS SELECT count(*) AS n FROM t;
+CREATE VIEW v_call AS SELECT id, lower(name) AS lname FROM t;
+CREATE VIEW v_flag AS SELECT id FROM t WHERE flag;
+CREATE VIEW v_distinct AS SELECT DISTINCT name FROM t;
+CREATE VIEW v_union AS SELECT id FROM t UNION ALL SELECT id FROM u;
+CREATE VIEW v_quoted AS SELECT id AS "Id" FROM t;
+CREATE VIEW v_star AS SELECT * FROM t;
+CREATE VIEW v_literal AS SELECT id FROM t WHERE id > 0;
+CREATE VIEW v_in AS SELECT id FROM t WHERE name IN ('a', 'b');
+CREATE VIEW v_join AS SELECT t.id, u.label FROM t JOIN u ON u.t_id = t.id;
+CREATE VIEW v_case AS SELECT id, CASE WHEN id > 5 THEN 'big' ELSE 'small' END AS size FROM t;
+CREATE VIEW v_limit AS SELECT id FROM t ORDER BY id LIMIT 10;
+CREATE VIEW v_alias AS SELECT x.id FROM t AS x;
+`
+
+// replacedView finds the view a plan replaces.
+var replacedView = regexp.MustCompile(`(?m)^CREATE OR REPLACE VIEW "([a-z_]+)" AS$`)
+
+// Spanner stores its own rendering of a view's query. The host compares a
+// declared query with it by text: it folds case, quotes and spacing, strips
+// the qualifiers Spanner adds to a UNION's columns and expands a SELECT *
+// with the declared columns, so those views converge. A query whose
+// conditions, literals, joins or aliases Spanner rewrites does not:
+// `WHERE id > 0` is stored as `WHERE (id > '0'::bigint)`, and such a view is
+// replaced on every plan, as Ptah's built-in Spanner engine replaced it.
+//
+// schema.view-query-equivalence (contract 25.33) would let the provider decide
+// these pairs, but the host then compares no view query of the engine by its
+// text, and a CompareViewQueries request carries neither the columns a
+// SELECT * stands for nor a way to hand a pair back to the host's fold.
+// Listing the feature with an answer by the provider's own spelling replans
+// v_star and v_union, which converge here, so the provider does not list it.
+func TestHostReplacesTheViewsSpannerRewritesE2E(t *testing.T) {
+	c := testcheck.New(t)
+	address := withSearchPath(c, freshDatabase(c))
+	output, err := applySQL(c, address, viewShapes)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(queryRows(c, address, `SELECT view_definition FROM information_schema.views WHERE table_name IN ('v_literal', 'v_join', 'v_star') ORDER BY table_name`),
+		qt.DeepEquals, []string{
+			"SELECT t.id, u.label FROM (t JOIN u ON ((u.t_id = t.id)))",
+			"SELECT id FROM t WHERE (id > '0'::bigint)",
+			"SELECT id, name, flag FROM t",
+		})
+	output, err = planSQL(c, address, viewShapes)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	var replaced []string
+	for _, match := range replacedView.FindAllStringSubmatch(output, -1) {
+		replaced = append(replaced, match[1])
+	}
+	c.Assert(replaced, qt.DeepEquals, []string{"v_alias", "v_case", "v_in", "v_join", "v_limit", "v_literal"}, qt.Commentf("%s", output))
 }

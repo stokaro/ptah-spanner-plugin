@@ -126,6 +126,26 @@ func Same(declared, observed string) bool {
 	return canonical == strings.ToLower(strings.TrimSpace(observed))
 }
 
+// narrowIntegers are the spellings of PostgreSQL's 32-bit integer that
+// Spanner accepts. It stores each as bigint: measured on the emulator behind
+// PGAdapter 0.56.2, an integer column reads back as bigint and takes
+// 9999999999. Spanner keeps one integer type, 64 bits wide.
+var narrowIntegers = map[string]bool{"integer": true, "int": true}
+
+// Widened reports what Spanner leaves out of a declared type it accepts, as
+// one line naming the declared spelling and what is lost, or false when it
+// keeps the whole type. The one such type is PostgreSQL's 32-bit integer,
+// alone or as an array's element: Spanner stores bigint, so the 32-bit range
+// is not enforced. A spelling Spanner refuses is not widened.
+func Widened(declared string) (string, bool) {
+	spelling := spaces.ReplaceAllString(strings.ToLower(strings.TrimSpace(declared)), " ")
+	element, _ := strings.CutSuffix(spelling, "[]")
+	if !narrowIntegers[element] {
+		return "", false
+	}
+	return spelling + ": the 32-bit range; Spanner stores bigint", true
+}
+
 // DataType is information_schema.columns.data_type for a canonical type: the
 // type without its length, and ARRAY for an array.
 func DataType(canonical string) string {

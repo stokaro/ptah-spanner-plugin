@@ -128,6 +128,8 @@ Some of what these pages describe needs more:
 | Dev and shadow databases | A Ptah that carries [stokaro/ptah#5565](https://github.com/stokaro/ptah/pull/5565) |
 | The down file of a schema whose foreign key is a table constraint | A Ptah that carries [stokaro/ptah#5585](https://github.com/stokaro/ptah/pull/5585) |
 | Declared schemas, a SQL schema file's `TTL` clause, filtered indexes, and keeping the seed ledger out of a plan | Provider contract 25.29; an older Ptah refuses the first three and plans to drop the ledger, as [Clauses Ptah does not hand the provider](limitations.md#clauses-ptah-does-not-hand-the-provider) describes |
+| A SQL schema file's `DROP VIEW IF EXISTS` of a name a table holds, which Spanner runs and ignores | Provider contract 25.33; an older Ptah refuses the file with `the schema declares t as another kind of object` |
+| Reporting that a column declared `integer` or `int` is stored as `bigint`, without the 32-bit range | Provider contract 25.33, to a program that renders through Ptah's Go API; an older Ptah renders the same statement and reports nothing, see [Column types](declarations.md#column-types) |
 
 ## Connecting
 

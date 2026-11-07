@@ -139,6 +139,38 @@ func TestConvertible(t *testing.T) {
 	}
 }
 
+// Spanner stores PostgreSQL's 32-bit integer as bigint, alone and as an
+// array's element, and keeps every other type it accepts whole. A spelling it
+// refuses is not widened, because nothing renders it.
+func TestWidened(t *testing.T) {
+	tests := []struct {
+		declared, want string
+		widened        bool
+	}{
+		{declared: "integer", want: "integer: the 32-bit range; Spanner stores bigint", widened: true},
+		{declared: " INT ", want: "int: the 32-bit range; Spanner stores bigint", widened: true},
+		{declared: "Integer[]", want: "integer[]: the 32-bit range; Spanner stores bigint", widened: true},
+		{declared: "bigint"},
+		{declared: "int8"},
+		{declared: "int4"},
+		{declared: "smallint"},
+		{declared: "varchar(255)"},
+		{declared: "float"},
+		{declared: "real"},
+		{declared: "text"},
+		{declared: "numeric"},
+		{declared: "interval"},
+	}
+	for _, test := range tests {
+		t.Run(test.declared, func(t *testing.T) {
+			c := testcheck.New(t)
+			got, widened := coltype.Widened(test.declared)
+			c.Assert(widened, qt.Equals, test.widened)
+			c.Assert(got, qt.Equals, test.want)
+		})
+	}
+}
+
 func TestDataType(t *testing.T) {
 	tests := []struct{ canonical, want string }{
 		{canonical: "bigint", want: "bigint"},

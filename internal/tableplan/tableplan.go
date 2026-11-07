@@ -643,8 +643,16 @@ func planningOperation(subject *protocol.ComparisonIdentity, value *protocol.Nor
 	return operation
 }
 
+// owner is the table an operation on subject applies to. A subject without
+// a schema is a table of the default schema: an offline render, such as
+// `ptah schema render`, has no session to read the search path from, and
+// names the table as the declaration does.
 func owner(subject *protocol.ComparisonIdentity) *protocol.Reference {
-	return tableop.Owner(subject.GetSchema().GetSource(), subject.GetName().GetSource())
+	schema := subject.GetSchema().GetSource()
+	if schema == "" {
+		schema = ddl.DefaultSchema
+	}
+	return tableop.Owner(schema, subject.GetName().GetSource())
 }
 
 func keyOf(subject *protocol.ComparisonIdentity) tableKey {
