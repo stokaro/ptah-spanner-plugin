@@ -76,10 +76,7 @@ ptah providers install spanner
 ```
 
 A command that names a `spanner://` address or the `spanner` dialect then
-selects the installed copy without a flag or a manifest, on a Ptah that builds
-in no Spanner engine of its own; see
-[On a Ptah with a built-in Spanner engine](#on-a-ptah-with-a-built-in-spanner-engine)
-for the other case.
+selects the installed copy without a flag or a manifest.
 [Configure the Spanner provider](https://docs.ptah.run/edge/extend/providers/spanner/)
 describes the install checks, how a command selects the provider, and the
 refusals a command reports when no usable installation is selected. The
@@ -138,6 +135,11 @@ spanner://localhost:5432/app?sslmode=disable
   `application_name`. A user name and a password in the address go to PGAdapter.
 - `cloudspanner://` and `google-spanner://` are the same address, in any case.
 
+Connect with one of these schemes. A `postgres://` address selects Ptah's
+PostgreSQL engine, not the provider: Ptah refuses a server whose version banner
+names Spanner there, and the emulator's banner, `PostgreSQL 14.1`, names no
+product at all, so use `spanner://` for the emulator too.
+
 The provider refuses an address with another scheme, no host, no database, a
 path below the database or a fragment, with
 `a Spanner address is spanner://host:port/database, with an optional query string`.
@@ -192,26 +194,6 @@ it.
 `PTAH_ATLAS_STRICT_COMPAT=1` reproduces the community binary: it refuses
 `PTAH_PROVIDER_CONFIG` by name and starts no provider. See
 [Strict CE mode](https://docs.ptah.run/edge/atlas/strict-ce-mode/).
-
-## On a Ptah with a built-in Spanner engine
-
-A Ptah release that builds in a Spanner engine of its own keeps that engine for
-`spanner://` addresses, and the provider serves a command only where the
-command asks for it:
-
-- `ptah` uses the provider when the command passes `--provider-engine spanner`.
-  The installed copy serves it, or the entry of the manifest that
-  `--provider-config` names.
-- Pin `search_path=public` in the address, as in
-  `spanner://localhost:5432/app?sslmode=disable&search_path=public`. Such a
-  release reads an address that pins no `search_path` as a read of every
-  schema, through its built-in engine's catalog, which the provider does not
-  serve, and the command stops with
-  `read database schema: no realm-scope schema probe for dialect "spanner"`.
-  `--schemas` does not change that.
-- `ptah-compat` serves `spanner://` with the built-in engine, and refuses a
-  manifest entry for the provider with
-  `invalid provider registration: target name "cloudspanner" is claimed by "ptah.run/spanner" and "github.com/stokaro/ptah-spanner-plugin"`.
 
 ## Next steps
 
