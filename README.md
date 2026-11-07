@@ -1,83 +1,143 @@
 # Ptah Spanner provider
 
-This repository will hold the executable Spanner provider for
-[Ptah #4204](https://github.com/stokaro/ptah/issues/4204).
+This repository holds the executable provider that serves Cloud Spanner's
+PostgreSQL interface to [Ptah](https://github.com/stokaro/ptah). Ptah starts it
+as a subprocess and talks to it over the experimental provider protocol
+([Ptah #4204](https://github.com/stokaro/ptah/issues/4204)). The provider is an
+optional installation: Ptah recognizes the `spanner` engine without it and
+explains where to get it.
 
-**It is a scaffold with no features yet.** The executable negotiates with a
-Ptah host, declares the `spanner` engine, its identifier rules and its release
-lines, and stops there. It implements no service. The session service the
-runtime requires refuses every `Open` with `Unimplemented`. A host that
-negotiates with it finds no schema inspection, planning, rendering or
-execution to call, and no database address is read or contacted.
+The provider reaches Spanner through PGAdapter, which speaks the PostgreSQL
+protocol in front of a Spanner database. PGAdapter is a separate component:
+installing the provider installs no PGAdapter and provisions no database.
 
-## What the host does today
+**Support is best effort.** The live tests run the Cloud Spanner emulator behind
+PGAdapter (`gcr.io/cloud-spanner-pg-adapter/pgadapter-emulator:v0.56.2`), which
+is evidence about the PostgreSQL interface, not about the managed service.
 
-The host's built-in `spanner` dialect reaches Cloud Spanner through its PostgreSQL interface, with PostgreSQL's SQL and PGAdapter as the driver; it is measured against the Spanner emulator behind PGAdapter and certified for no line. Its provider catalog also reserves the engine name `spanner`, the aliases `cloudspanner`, `google-spanner` and `google_spanner`, and this repository as the official provider. Recognition does not install or authorize an executable. See the host's [Spanner provider page](https://github.com/stokaro/ptah/blob/master/docs/site/src/content/docs/extend/providers/spanner.md).
+## What the provider does
 
-This scaffold covers the GoogleSQL dialect only. How an engine name that the host already serves natively will select this provider is a host decision this repository does not make.
+- **Sessions.** An address is `spanner://host:port/database`, with optional
+  query parameters the PostgreSQL driver reads, such as `sslmode`. The schemes
+  `cloudspanner://` and `google-spanner://` are the same. A reason the provider
+  writes never quotes the address.
+- **Reads.** A read describes the base tables of the requested schemas, or of
+  `public` when the request names none: every column with the type Spanner
+  stores, its nullability and its stored default, the primary key in key order,
+  and the secondary indexes with each key's direction and NULLS ordering and
+  their `STORING` columns. The index Spanner builds for a foreign key is
+  Spanner's, not the user's, and is left out.
+- **Refusals instead of omissions.** A read fails, with a reason that names the
+  object, when the schema holds something the provider does not describe yet:
+  a view, a foreign key or CHECK constraint, a row deletion policy, a generated
+  or identity column (Spanner adds a hidden `rowid` identity column to a table
+  created without a primary key), a filtered, search or interleaved index, or an
+  interleaved table. Ptah plans to create what a read leaves out, so leaving
+  such an object out would plan a change the database refuses.
+- **Plans.** Ptah plans the engine's tables with its common planner, and the
+  provider writes each change: `CREATE TABLE`, `DROP TABLE`, and `ALTER TABLE`
+  to add or drop a column. A column type Spanner refuses (`smallint`, `int4`,
+  `timestamp`, `json`, `numeric(p,s)` and others) is refused before anything is
+  sent, as is a `NOT NULL` column added without a default.
+- **Execution.** Spanner refuses a schema statement inside an explicit
+  transaction, so each statement commits as it runs. A statement Spanner refuses
+  applied nothing and the statements before it stay applied; the result says how
+  many applied. A call that ends while a statement runs reports the outcome as
+  unknown, because Spanner keeps applying a schema change its client stopped
+  waiting for.
+- **Locks.** `ptah schema apply` takes a lock before it reads the target.
+  Spanner has no session lock, so a lock is a row of the table `ptah_locks`,
+  which the provider creates on first use. The row names its holder and the end
+  of a 30-second lease that every check extends. A holder that dies keeps the
+  lock until its lease ends. A read reserves the table, so Ptah never plans its
+  removal or writes it into an export.
 
-## What the description declares
+What is not served yet, in the order it is planned: column changes and indexes
+through the provider's own table planning, foreign keys and CHECK constraints,
+the row deletion policy, views and sequences, and versioned migrations. The
+plan and the measurements behind it are kept with #4204.
 
-- Provider ID: `github.com/stokaro/ptah-spanner-plugin`.
-- Engine: `spanner`, with the aliases `cloudspanner`, `google-spanner` and `google_spanner`.
-- Identifier rules: table, column and index names compare without regard to ASCII case, and an index name is unique in the database, not in its table.
-- Release lines: the single line `0`, because the managed service has no release lines. The host measures the PostgreSQL interface through an emulator, which is not the GoogleSQL dialect, so that measurement is not reused here. Every line is best effort and states why it runs
-  no job. The scaffold certifies none.
+## Use it
 
-## Roadmap
+Build the provider and describe it in a provider manifest:
 
-First comes a connection through the Cloud Spanner client and the session service, then catalog inspection and DDL execution in GoogleSQL. Rendering and planning follow, and each service is advertised in the description only when it exists.
+```sh
+GOWORK=off CGO_ENABLED=0 go build -o bin/ptah-plugin-spanner ./cmd/ptah-plugin-spanner
+shasum -a 256 bin/ptah-plugin-spanner
+```
+
+```json
+{
+  "format_version": 2,
+  "providers": [{
+    "executable": "/absolute/path/to/bin/ptah-plugin-spanner",
+    "sha256": "<the digest>",
+    "provider_id": "github.com/stokaro/ptah-spanner-plugin",
+    "engines": [{"id": "spanner", "aliases": ["cloudspanner", "google-spanner", "google_spanner"]}]
+  }]
+}
+```
+
+Then select it explicitly:
+
+```sh
+ptah providers check --provider-config providers.json --provider-engine spanner --json
+ptah schema apply --db-url 'spanner://localhost:5432/app?sslmode=disable&search_path=public' \
+  --root-dir ./entities --provider-config providers.json --provider-engine spanner
+```
+
+A Ptah release that still builds in a Spanner engine of its own reads an
+address that pins no `search_path` as a read of every schema, through its
+built-in catalog. Pin `search_path=public` in the address until the built-in
+engine is removed.
 
 ## Build and test
 
-The module pins the published experimental SDK, `github.com/stokaro/ptah/provider-sdk`,
-by pseudo-version. It needs neither the Ptah application source nor a local SDK
-checkout and has no `replace` directive.
+The module pins the published SDK, `github.com/stokaro/ptah/provider-sdk`, by
+tag. It needs neither the Ptah source nor a local SDK checkout and has no
+`replace` directive.
 
 ```sh
 GOWORK=off go test -race ./...
-GOWORK=off CGO_ENABLED=0 go build -o bin/ptah-plugin-spanner ./cmd/ptah-plugin-spanner
+GOWORK=off make lint
 ```
 
-The executable requires the SDK's authenticated local subprocess bootstrap. Run
-it through a Ptah SDK client, not as a command-line tool. Print the release
-lines it declares with:
+The live tests need a Spanner emulator behind PGAdapter. Each test takes a
+database of its own on the endpoint, which the emulator creates on the first
+connection:
 
 ```sh
-GOWORK=off go run ./cmd/release-lines
+docker run -d --name spanner -p 5432:5432 gcr.io/cloud-spanner-pg-adapter/pgadapter-emulator:v0.56.2
+PTAH_SPANNER_TEST_URL='spanner://127.0.0.1:5432/ptah_test?sslmode=disable' \
+PTAH_HOST_TEST_BIN=/path/to/ptah \
+  GOWORK=off go test -tags integration -race -count=1 ./integration
 ```
+
+`PTAH_HOST_TEST_BIN` names a `ptah` binary for the tests that drive the host;
+without it they are skipped. CI builds the newest Ptah release whose contract
+the provider speaks, and Ptah's master branch. A draft pull request that needs
+an unmerged host change names the host branch in `.github/host-ref`, which
+must be removed before the pull request leaves draft.
 
 ## Releases
 
 A tag that starts with `v` runs `.github/workflows/release.yml`, which
 publishes a GitHub release through GoReleaser (`.goreleaser.yaml`). Each
-release carries one archive per platform, a `checksums.txt` file, and
-`release-lines.json`:
+release carries one archive per platform, `checksums.txt`,
+`release-lines.json`, and `ptah-provider.json`, which a host reads to choose
+the newest release whose minimum provider contract it meets:
 
 ```text
 ptah-plugin-spanner_<version>_<os>_<arch>.tar.gz   (.zip on Windows)
 checksums.txt
 release-lines.json
+ptah-provider.json
 ```
 
 `<version>` is the tag without the leading `v`. The platforms are linux,
-darwin and windows on amd64 and arm64. Every archive holds the
-`ptah-plugin-spanner` binary (`ptah-plugin-spanner.exe` on Windows),
-`README.md` and `LICENSE`. The binaries are built with `CGO_ENABLED=0` and
-`-trimpath`.
-
-`checksums.txt` lists the SHA-256 digest of every archive and of
-`release-lines.json` in `sha256sum` format (`<hex digest>  <file name>`). A
-host pins a release by version and by the digest listed there for its
-platform's archive.
-
-Pull requests that touch the release inputs run `goreleaser check` and a
-snapshot build, then verify the snapshot's `checksums.txt`. To try it locally:
-
-```sh
-GOWORK=off goreleaser release --snapshot --clean
-(cd dist && cp ../.release/release-lines.json . && shasum -a 256 -c checksums.txt)
-```
+darwin and windows on amd64 and arm64. The binaries are built with
+`CGO_ENABLED=0` and `-trimpath`. `checksums.txt` lists the SHA-256 digest of
+every archive and document in `sha256sum` format.
 
 ## License
 

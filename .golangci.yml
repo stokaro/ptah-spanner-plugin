@@ -1,11 +1,14 @@
 version: "2"
 
+# The linters, their settings and the exclusions that name no path are Ptah's:
+# this provider is held to its host's lint contract. What differs from the
+# host's .golangci.yml is module-specific (the gci prefix, the rowserrcheck
+# packages, the path exclusions) or a linter the host does not run. CI's
+# lint-contract job compares the two with internal/cmd/lintcontract.
+
 run:
   concurrency: 8
-  # No `go:` key on purpose. Its documented default is the go directive from
-  # go.mod, so restating it here creates a second Go version to maintain — and
-  # that copy is exactly what drifted: a dependency bump moved this file alone
-  # to 1.26.6 while every other declaration stayed at 1.26.5.
+  timeout: 30m
 
 linters:
   default: none
@@ -35,6 +38,23 @@ linters:
     - staticcheck
     - unused
     - whitespace
+    # Beyond the host's set. The provider satisfies each of these; errcheck is
+    # the one linter of golangci-lint's standard set the host leaves out.
+    - bidichk
+    - bodyclose
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exptostd
+    - fatcontext
+    - gocheckcompilerdirectives
+    - makezero
+    - mirror
+    - misspell
+    - nosprintfhostport
+    - reassign
+    - unconvert
+    - usestdlibvars
   settings:
     depguard:
       rules:
@@ -42,8 +62,10 @@ linters:
           deny:
             - pkg: io/ioutil
               desc: 'Deprecated: As of Go 1.16, the same functionality is now provided by package `io` or package `os`.'
+            # `pkg` matches by prefix, so this covers every testify subpackage
+            # (assert, require, mock, suite) with one entry.
             - pkg: github.com/stretchr/testify
-              desc: 'testify is prohibited here; use quicktest imported as qt, the standard library testing package, or an existing project test helper.'
+              desc: 'testify is prohibited; tests assert with quicktest imported as qt, through internal/testcheck where it helps.'
     funlen:
       lines: 240
       statements: 160
@@ -68,17 +90,20 @@ linters:
           alias: qt
     lll:
       line-length: 240
-    nakedret: # Discussions on why naked return can be a problem: https://github.com/golang/go/issues/21291
-      max-func-lines: 2 # few lines with bare return can be fine for some super short logicless functions
+    misspell:
+      locale: US
+    nakedret:
+      max-func-lines: 2
     nestif:
       min-complexity: 6
     nolintlint:
       require-explanation: true
       require-specific: true
       allow-no-explanation:
-        # the following linters are allowed without explanations because usually there's nothing to explain
         - errcheck
         - lll
+    # nolintguard does not register as a golangci-lint module plugin. It is
+    # pinned as a Go tool and run through go vet by `make lint-nolintguard`.
     revive:
       severity: error
       # See https://github.com/mgechev/revive/blob/master/RULES_DESCRIPTIONS.md
@@ -168,12 +193,10 @@ linters:
           disabled: false
         - name: receiver-naming
           arguments:
-            - maxLength: 4 # TODO: get back to 3
+            - maxLength: 4
           disabled: false
         - name: redefines-builtin-id
           disabled: false
-        #- name: redundant-build-tag # not supported in golangci-lint
-        #  disabled: false
         - name: redundant-import-alias
           disabled: false
         - name: string-of-int
@@ -201,9 +224,9 @@ linters:
         - name: unused-parameter
           arguments:
             - allowRegex: '^_'
-          disabled: true # TODO: re-enable
+          disabled: true # off in the host's contract too
         - name: unused-receiver
-          disabled: true # TODO: re-enable
+          disabled: true # off in the host's contract too
         - name: use-any
           disabled: false
         - name: useless-break
@@ -212,18 +235,25 @@ linters:
           disabled: false
         - name: waitgroup-by-value
           disabled: false
+    rowserrcheck:
+      # The list is what the linter can see, and the default is database/sql
+      # alone. The linter tracks rows by the package that declared the Query
+      # returning them, so a reader that holds one of the interfaces below
+      # rather than a *sql.DB is invisible to it under the default list. Every
+      # package here declares a QueryContext returning *sql.Rows, and a new such
+      # declaration joins the list.
+      packages:
+        - database/sql
+        - github.com/jackc/pgx/v5
     staticcheck:
       checks:
-        # STxxxx checks in https://staticcheck.io/docs/checks/#ST
         - all
         - -QF1008
-        # ST1000 (package comment required) is intentionally enabled: every Go
-        # package must carry a package-level doc comment .
+        # ST1000 (package comment required) stays on: every package carries a
+        # package doc comment that says what it does.
         - -ST1003
         - -ST1005
         - -ST1016
-        # Exported-symbol comment checks stay off (previously suppressed by the
-        # "comments" exclusion preset, which had to go to let ST1000 report).
         - -ST1020
         - -ST1021
         - -ST1022
@@ -245,6 +275,14 @@ linters:
           - nestif
           - dupl
         path: '_test\.go$'
+      # gosec G101 reads the made-up credentials of these test fixtures as
+      # real ones: example user:pass@ addresses, a static login's password,
+      # role passwords and password inputs. Limited to the test files that
+      # hold them; other tests are still scanned.
+      - linters:
+          - gosec
+        text: 'G101:'
+        path: '(internal/backend/reasons_test\.go|internal/commonobject/access_test\.go|internal/connection/address_test\.go|internal/secretvalue/expand_test\.go|integration/sessions_live_test\.go)$'
       - path: '_test\.go$'
         text: 'function-result-limit:'
       - path: '_test\.go$'
@@ -253,19 +291,26 @@ linters:
         text: 'unused-parameter:'
       - path: '_test\.go$'
         text: 'unchecked-type-assertion:'
-      - path: 'cmd/.*\.go$'
+      - path: '(cmd|integration)/.*\.go$'
         text: 'use of `fmt\..*` forbidden by pattern'
-      - path: 'cmd/.*\.go$'
+      - path: '(cmd|integration)/.*\.go$'
+        linters:
+          - gocognit
+          - nestif
+          - gocyclo
+      - path: '(cmd|integration)/.*\.go$'
         text: 'deep-exit:'
       - path: 'cmd/.*\.go$'
         linters:
           - gochecknoinits
+      - path: 'integration/.*\.go$'
+        linters:
+          - unused
       - text: 'var-naming: avoid meaningless package names'
         linters:
           - revive
     paths:
       - 'third_party$'
-      - 'builtin$'
 
 issues:
   max-issues-per-linter: 0
@@ -280,9 +325,8 @@ formatters:
       sections:
         - standard
         - default
-        - prefix(github.com/stokaro)
+        - prefix(github.com/stokaro/ptah-spanner-plugin)
   exclusions:
     generated: lax
     paths:
       - 'third_party$'
-      - 'builtin$'

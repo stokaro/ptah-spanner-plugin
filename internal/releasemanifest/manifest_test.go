@@ -5,14 +5,15 @@ import (
 	"testing"
 
 	qt "github.com/frankban/quicktest"
+	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/backend"
 	"github.com/stokaro/ptah-spanner-plugin/internal/releasemanifest"
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
 )
 
 func TestBuild_HappyPath(t *testing.T) {
-	c := qt.New(t)
+	c := testcheck.New(t)
 	first, err := releasemanifest.Build(backend.Description())
 	c.Assert(err, qt.IsNil)
 	second, err := releasemanifest.Build(backend.Description())
@@ -29,7 +30,7 @@ func TestBuild_HappyPath(t *testing.T) {
 }
 
 func TestBuild_CertifiesNoLine(t *testing.T) {
-	c := qt.New(t)
+	c := testcheck.New(t)
 	out, err := releasemanifest.Build(backend.Description())
 	c.Assert(err, qt.IsNil)
 	var manifest releasemanifest.Manifest
@@ -41,7 +42,7 @@ func TestBuild_CertifiesNoLine(t *testing.T) {
 }
 
 func TestBuild_LeavesOutAnEngineWithoutLines(t *testing.T) {
-	c := qt.New(t)
+	c := testcheck.New(t)
 	description := &protocol.Description{ProviderId: "example.org/none", Engines: []*protocol.Engine{{Id: "none"}}}
 	out, err := releasemanifest.Build(description)
 	c.Assert(err, qt.IsNil)

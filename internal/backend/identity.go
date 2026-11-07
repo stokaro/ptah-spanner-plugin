@@ -2,22 +2,34 @@ package backend
 
 import protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 
-// unprobedReason is why the only line is best effort. The scaffold has no
-// launch recipe and no test job, and the host measures the PostgreSQL
-// interface through PGAdapter, not GoogleSQL.
-const unprobedReason = "The provider is a scaffold: it has no launch recipe for the GoogleSQL dialect and no job that runs it."
+// EmulatorImage is the server the provider's live tests run against: the Cloud
+// Spanner emulator behind PGAdapter. It is the only Spanner endpoint a
+// container can provide, and it is the image Ptah's built-in Spanner engine
+// was measured against.
+const EmulatorImage = "gcr.io/cloud-spanner-pg-adapter/pgadapter-emulator:v0.56.2"
+
+// unprobedReason is why the only line stays best effort although a job runs
+// it: the job runs the emulator, which is evidence about the PostgreSQL
+// interface, not about the managed service.
+const unprobedReason = "The managed service is not tested: the live tests run the Cloud Spanner emulator behind PGAdapter, " +
+	"which is evidence about the PostgreSQL interface only."
 
 // aliases lists the other names the engine answers to. They are the aliases the
 // Ptah host catalog reserves for Spanner.
 func aliases() []string { return []string{"cloudspanner", "google-spanner", "google_spanner"} }
 
-// identifierRules describes how GoogleSQL compares names. Table, column and
-// index names are case-insensitive, and an index name is unique in the
-// database, not in its table.
+// identifierRules describes how the PostgreSQL interface resolves names.
+//
+// A statement names a table, a column or an index by its exact spelling:
+// measured on the emulator behind PGAdapter 0.56.2, after `CREATE TABLE "Abc"`
+// a `CREATE INDEX ... ON "abc"` answers `Table not found: abc`. Spanner also
+// refuses a second name that differs only in case (`CREATE TABLE "abc"` beside
+// "Abc" answers `Duplicate name in schema: abc`), which the server enforces
+// whatever the rules here say. An index name is unique in its schema.
 func identifierRules() *protocol.IdentifierRules {
 	return &protocol.IdentifierRules{
-		TableNames: protocol.IdentifierRules_ASCII_CASE_INSENSITIVE, ColumnNames: protocol.IdentifierRules_ASCII_CASE_INSENSITIVE,
-		IndexNames: protocol.IdentifierRules_ASCII_CASE_INSENSITIVE, IndexNamespace: protocol.IdentifierRules_SCHEMA,
+		TableNames: protocol.IdentifierRules_EXACT, ColumnNames: protocol.IdentifierRules_EXACT,
+		IndexNames: protocol.IdentifierRules_EXACT, IndexNamespace: protocol.IdentifierRules_SCHEMA,
 	}
 }
 
@@ -25,7 +37,8 @@ func identifierRules() *protocol.IdentifierRules {
 // no version axis, so the line is "0", the name the host uses for it.
 func releaseLines() []*protocol.ReleaseLine {
 	return []*protocol.ReleaseLine{{
-		Line: "0", Label: "Cloud Spanner", Support: protocol.ReleaseLine_BEST_EFFORT, Unprobed: unprobedReason,
-		Note: "The managed service has no release lines. Any Spanner emulator is a separate recipe.",
+		Line: "0", Label: "Cloud Spanner, PostgreSQL interface", Support: protocol.ReleaseLine_BEST_EFFORT,
+		Image: EmulatorImage, Unprobed: unprobedReason,
+		Note: "The managed service has no release lines. Over the PostgreSQL wire the server reports PGAdapter's PostgreSQL compatibility level, which names no Spanner release.",
 	}}
 }
