@@ -462,11 +462,19 @@ dropped with `DROP VIEW`:
 type Objects struct{}
 ```
 
-A read reports the query as Spanner stores it. A declared query converges with
-it whatever its case, spacing and quoting, but a condition Spanner rewrites does
-not: `WHERE score > 10` reads back as `WHERE (score > '10'::bigint)`, and the
-view is replaced on every plan until the declaration uses the stored spelling.
-`ptah db read` prints that spelling.
+A read reports the query as Spanner stores it, which is Spanner's own
+rendering: `WHERE score > 10` reads back as `WHERE (score > '10'::bigint)`, a
+join in parentheses, a `LIMIT` cast to `bigint`, `t AS x` as `t x` with its
+columns unqualified, a `SELECT *` with every column named and a `UNION`'s
+columns qualified. A declared query converges with it whatever its case,
+spacing and quoting. With a host of contract 25.37 the provider also reads both
+queries into one form, typed by the declared columns, so a query in any of the
+spellings above converges too. A query it cannot read, such as one with a CASE,
+a subquery, an aggregate call or `GROUP BY`, is left to the host's comparison
+of the two texts, and a condition Spanner rewrites there is replaced on every
+plan until the declaration uses the stored spelling. A host of contracts 25.33
+to 25.36 asks the provider without the declared columns: a `SELECT *` view is
+then replaced on every plan. `ptah db read` prints the stored spelling.
 
 A materialized view, `WITH CHECK OPTION`, a view option such as
 `security_invoker` and a view comment are refused: Spanner has no materialized

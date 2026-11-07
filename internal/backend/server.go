@@ -41,5 +41,6 @@ func Server() runtime.Server {
 		Statements:      spanner,
 		CommonObjects:   spanner,
 		CheckComparer:   spanner,
+		ViewComparer:    spanner,
 	}
 }

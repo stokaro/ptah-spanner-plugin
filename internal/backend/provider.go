@@ -152,6 +152,12 @@ func providerFeatures() []string {
 		// tableplan.SameCheck.
 		provider.ConstraintChangesFeature,
 		provider.CheckEquivalenceFeature,
+		// The host asks the provider whether a declared view's query and the
+		// one Spanner stores are one query, with the columns of every declared
+		// table, and leaves a pair the provider cannot read to its own
+		// reading of the texts; see CompareViewQueries.
+		provider.ViewQueryEquivalenceFeature,
+		provider.ViewQueryContextFeature,
 		// Every Ptah command plans in the exact statement style, which is the
 		// only style the provider writes: no statement carries an existence
 		// guard, which Spanner refuses on ALTER.

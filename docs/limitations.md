@@ -151,7 +151,8 @@ them is part of stokaro/ptah#4204.
   runs, after the statements before it. Leave the clause out: Spanner's views
   cannot be written through.
 - **A condition Spanner rewrites.** A view or a `CHECK` whose text the provider
-  cannot read in Spanner's spelling is replaced on every plan; see
+  cannot read in Spanner's spelling is replaced on every plan, and so is any
+  rewritten view under a host older than contract 25.37; see
   [Views](declarations.md#views).
 
 ## Where the emulator differs
