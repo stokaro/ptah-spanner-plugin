@@ -57,9 +57,9 @@ func TestSplit_HappyPath(t *testing.T) {
 		},
 		{
 			name: "a semicolon inside a dollar-quoted string, a continued escape string and a nested comment",
-			body: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b; */ c */;\nUPDATE t SET a = E'it\\'s;'\n'z';",
+			body: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b */ c; d */;\nUPDATE t SET a = E'it\\'s;'\n'z';",
 			want: []unit{
-				{SQL: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b; */ c */", Source: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b; */ c */;", Data: true},
+				{SQL: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b */ c; d */", Source: "INSERT INTO t (a) VALUES ($$x;y$$) /* a /* b */ c; d */;", Data: true},
 				{SQL: "UPDATE t SET a = E'it\\'s;'\n'z'", Source: "UPDATE t SET a = E'it\\'s;'\n'z';", Data: true},
 			},
 		},

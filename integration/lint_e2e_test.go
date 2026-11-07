@@ -176,7 +176,7 @@ func TestHostLintsTextSpannerReadsAsPostgreSQLDoesE2E(t *testing.T) {
 	c := testcheck.New(t)
 	file := filepath.Join(writeFiles(c, map[string]string{"s69.sql": `CREATE TABLE withpk (id bigint NOT NULL, note text, PRIMARY KEY (id));
 INSERT INTO withpk (id, note) VALUES (1, $$it's; fine$$);
-/* a /* nested; it's */ comment */
+/* a /* nested */ it's; a comment */
 INSERT INTO withpk (id, note) VALUES (2, E'it\'s; fine');
 CREATE TABLE nopk (a bigint);
 `}), "s69.sql")

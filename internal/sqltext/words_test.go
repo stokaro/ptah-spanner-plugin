@@ -28,7 +28,7 @@ func TestWords_HappyPath(t *testing.T) {
 		},
 		{
 			name:       "a dollar-quoted string, a continued escape string and a nested comment are read as PostgreSQL reads them",
-			text:       "SELECT $$x;y$$, E'a\\'b;'\n'c' /* d /* e; */ f */ FROM t",
+			text:       "SELECT $$x;y$$, E'a\\'b;'\n'c' /* d /* e */ f; g */ FROM t",
 			wantSource: []string{"SELECT", "$$x;y$$", ",", "E'a\\'b;'\n'c'", "FROM", "t"},
 			wantUpp:    []string{"SELECT", "$$x;y$$", ",", "E'a\\'b;'\n'c'", "FROM", "T"},
 		},
