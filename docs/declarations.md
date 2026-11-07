@@ -275,12 +275,24 @@ provider cannot read is replaced on every plan.
 
 ### Enum columns
 
-Spanner has no enum type. A column declared with enum values is created as
-`TEXT` under a `CHECK` that lists them, named `<table>_<column>_check`:
+Spanner has no enum type: the emulator answers `CREATE TYPE ... AS ENUM` with
+`Statement is not supported`. A column declared with enum values, or typed
+with the name of an enum the source declares, is created as `TEXT` under a
+`CHECK` that lists them, named `<table>_<column>_check`, as Ptah's built-in
+Spanner engine created it. A quote in a value is doubled:
 
 ```sql
-"kind" TEXT CONSTRAINT "posts_kind_check" CHECK (kind IN ('draft', 'published'))
+"kind" TEXT CONSTRAINT "posts_kind_check" CHECK (kind IN ('draft', 'it''s'))
 ```
+
+On a kept table the column is added without the `CHECK`, which Spanner refuses
+inside `ADD COLUMN`, and `ALTER TABLE ... ADD CONSTRAINT` follows it. Spanner
+refuses a value the `CHECK` does not list.
+
+The provider states this form to Ptah (provider contract 25.31), and Ptah
+builds the column before it compares and plans. An older Ptah without a
+built-in Spanner engine keeps the enum a type of its own and refuses it with
+`the experimental provider contract does not support SchemaDiff.EnumsAdded`.
 
 ## Row deletion policies
 
