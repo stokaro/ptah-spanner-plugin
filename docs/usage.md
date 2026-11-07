@@ -10,6 +10,7 @@ sourceOfTruth:
   - internal/address
   - internal/backend/sessions.go
   - internal/backend/identity.go
+  - internal/backend/capabilities.go
   - internal/backend/devclean.go
   - cmd/ptah-plugin-spanner
   - stokaro/ptah#4204
@@ -52,6 +53,12 @@ The provider declares one release line, `0`, labeled "Cloud Spanner, PostgreSQL
 interface", at the best-effort level. The managed service has no release lines,
 and over the PostgreSQL wire the server reports PGAdapter's PostgreSQL
 compatibility level, which names no Spanner release.
+
+The provider also states the capability facts Ptah plans the engine with when no
+database is connected, as for `ptah sql lint --dialect spanner` or an offline
+render. They are the facts Ptah's built-in Spanner engine planned with, most of
+them measured on the emulator, and `ptah db capabilities` prints them for a
+connected database.
 
 ## Before you start
 

@@ -38,6 +38,8 @@ import (
 //
 // Each was measured on the emulator behind PGAdapter by Ptah's built-in
 // Spanner engine and is restated here because the provider plans with it.
+// The offline facts state each of them too, beside the rest of the built-in
+// engine's preset; see offlineCapabilities.
 func sessionCapabilities() map[string]bool {
 	capabilities := map[string]bool{
 		"transactional_ddl":      false,

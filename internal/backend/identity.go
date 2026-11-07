@@ -34,11 +34,13 @@ func identifierRules() *protocol.IdentifierRules {
 }
 
 // releaseLines declares the one line Cloud Spanner has. The managed service has
-// no version axis, so the line is "0", the name the host uses for it.
+// no version axis, so the line is "0", the name the host uses for it. Its
+// capability facts are the offline ones; see lineCapabilities.
 func releaseLines() []*protocol.ReleaseLine {
 	return []*protocol.ReleaseLine{{
 		Line: "0", Label: "Cloud Spanner, PostgreSQL interface", Support: protocol.ReleaseLine_BEST_EFFORT,
 		Image: EmulatorImage, Unprobed: unprobedReason,
-		Note: "The managed service has no release lines. Over the PostgreSQL wire the server reports PGAdapter's PostgreSQL compatibility level, which names no Spanner release.",
+		Note:         "The managed service has no release lines. Over the PostgreSQL wire the server reports PGAdapter's PostgreSQL compatibility level, which names no Spanner release.",
+		Capabilities: lineCapabilities(),
 	}}
 }
