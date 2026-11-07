@@ -94,6 +94,36 @@ func Take(ctx context.Context, conn *pgx.Conn, name, holder string) (bool, error
 	return true, nil
 }
 
+// renewal is how much of a lease is left when a check renews it. A check
+// that finds more left reads the row and writes nothing.
+const renewal = "INTERVAL '20 seconds'"
+
+// Check reports whether holder holds the lock name with a live lease, and
+// extends the lease when less than renewal is left. A check that finds more
+// left only reads the row, so a check every second writes about once in ten
+// seconds. Spanner's emulator runs one read-write transaction at a time, and a
+// write that meets another session's open transaction waits for Spanner to
+// abort one of them, while a read waits for neither.
+func Check(ctx context.Context, conn *pgx.Conn, name, holder string) (bool, error) {
+	if conn == nil {
+		return false, errors.New("no lock connection")
+	}
+	var held, fresh bool
+	err := conn.QueryRow(ctx, "SELECT holder = $2 AND expires_at > CURRENT_TIMESTAMP, expires_at > CURRENT_TIMESTAMP + "+renewal+
+		" FROM ptah_locks WHERE lock_name = $1", name, holder).Scan(&held, &fresh)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, err
+	case !held:
+		return false, nil
+	case fresh:
+		return true, nil
+	}
+	return Extend(ctx, conn, name, holder)
+}
+
 // Extend reports whether holder still holds the lock name with a live lease,
 // and extends the lease when it does. A lease that has ended is not extended:
 // the holder cannot show it held the lock without a break.

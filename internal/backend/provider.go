@@ -6,7 +6,8 @@
 // types and defaults in Spanner's spelling and plans every table statement),
 // and renders and runs the statements it plans. It reads and writes a table's
 // row deletion policy in Go, YAML and HCL sources, and compares, reverses and
-// counts it.
+// counts it. It also types, reads and writes the rows a schema declares, and
+// runs seed files with their ledger.
 //
 // The provider describes what it reads completely or refuses the read: an
 // object it does not describe yet, such as a foreign key or a view, fails the
@@ -23,6 +24,7 @@ import (
 	"github.com/stokaro/ptah/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
+	"github.com/stokaro/ptah-spanner-plugin/internal/migrationlint"
 	"github.com/stokaro/ptah-spanner-plugin/internal/policysource"
 	"github.com/stokaro/ptah-spanner-plugin/internal/rowdeletion"
 	"github.com/stokaro/ptah-spanner-plugin/internal/tablefacets"
@@ -73,6 +75,17 @@ type session struct {
 	// lost is set once a lock the session held is gone. It never clears: the
 	// session runs nothing more.
 	lost bool
+	// transactions are the session's transaction handles by ID, and active
+	// the ID of the one whose transaction is open, if any; see
+	// transactions.go. mu guards them.
+	transactions map[string]*transaction
+	active       string
+	// readers are the metadata snapshot readers by ID; see metadata.go. mu
+	// guards them.
+	readers map[string]*reader
+	// results are the operator statements' results kept open past their
+	// first page, by page token; see statements.go. mu guards them.
+	results map[string]*openResult
 }
 
 // New returns a provider with no open session.
@@ -130,14 +143,40 @@ func providerFeatures() []string {
 		provider.CompareModelsFeature,
 		provider.ReverseChangesFeature,
 		provider.ReportCountsFeature,
+		// Migrations keep their revision records, log and tags in the
+		// tables Ptah's built-in Spanner engine kept them in, and read and
+		// change the records in Spanner's read-write transactions, which
+		// change data only; see history.go, metadata.go and
+		// transactions.go.
+		provider.TransactionsFeature,
+		provider.HistoryFeature,
+		provider.MetadataFeature,
+		// A migration body runs statement by statement, each where Spanner
+		// runs it; see migrationunits.
+		provider.MigrationSplitFeature,
+		// Declared rows are typed, read and written by the provider, and seed
+		// files run through it with their ledger; see rows.go and seeds.go.
+		provider.TypeRowsFeature,
+		provider.ReadRowsFeature,
+		provider.RenderRowWritesFeature,
+		provider.SeedsFeature,
+		// Migration lint splits a migration as Spanner reads it and checks
+		// the SP rules; see lint.go.
+		provider.LintFeature,
+		// The statements an operator writes, such as a migration's check
+		// assertions, run through the provider; see statements.go.
+		provider.StatementsFeature,
 	}
 }
 
 // engineFeatures is the feature list of the spanner engine: every feature of
-// the provider. The description, the session and the inspection snapshot all
+// the provider, and the statement facts of its lint split, which an engine
+// alone lists. The description, the session and the inspection snapshot all
 // report it, so the host holds one target profile for observed, desired and
 // planned values.
-func engineFeatures() []string { return providerFeatures() }
+func engineFeatures() []string {
+	return append(providerFeatures(), provider.LintStatementFactsFeature)
+}
 
 // minimumContract is the oldest contract a host must speak to start the
 // provider: the one the SDK it is built with speaks, which is the contract its
@@ -160,7 +199,9 @@ func Description() *protocol.Description {
 			Identifiers:   identifierRules(),
 			ReleaseLines:  releaseLines(),
 			Features:      engineFeatures(),
+			LintRules:     migrationlint.Rules(),
 			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, rowdeletion.Models()...),
+			QueryDialect:  queryDialect(),
 			Planning: []*protocol.ModelPlanning{{
 				Id: tableplan.ServiceID, ParentKinds: tableplan.ParentKinds(), ChangeKinds: tableplan.ChangeKinds(), OperationKinds: []string{tableop.Kind},
 			}},

@@ -78,6 +78,16 @@ func TestSplit_HappyPath(t *testing.T) {
 			},
 		},
 		{
+			name: "the data statements of a migration body",
+			text: "INSERT INTO t VALUES (1);\nupdate t set a = 2;\nDELETE FROM t;\nSELECT 1;",
+			want: []span{
+				{Start: 0, End: 25, Line: 1, Kind: sqltext.Insert, Words: []string{"INSERT", "INTO", "T", "VALUES", "(", "1", ")"}},
+				{Start: 26, End: 45, Line: 2, Kind: sqltext.Update, Words: []string{"UPDATE", "T", "SET", "A", "=", "2"}},
+				{Start: 46, End: 60, Line: 3, Kind: sqltext.Delete, Words: []string{"DELETE", "FROM", "T"}},
+				{Start: 61, End: 70, Line: 4, Kind: sqltext.Select, Words: []string{"SELECT", "1"}},
+			},
+		},
+		{
 			name: "only white space",
 			text: " \n\t",
 			want: make([]span, 0),
@@ -97,9 +107,9 @@ func TestSplit_FailurePath(t *testing.T) {
 	tests := []struct {
 		name, text, wantErr string
 	}{
-		{name: "a view", text: "CREATE VIEW v AS SELECT 1;", wantErr: `the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX and ` +
-			`ALTER TABLE \.\.\. ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL only`},
-		{name: "a data statement", text: "INSERT INTO t VALUES (1);", wantErr: `the provider analyzes .*`},
+		{name: "a view", text: "CREATE VIEW v AS SELECT 1;", wantErr: `the provider analyzes CREATE TABLE, DROP TABLE, CREATE INDEX, DROP INDEX, ` +
+			`ALTER TABLE \.\.\. ADD COLUMN, DROP COLUMN, ALTER COLUMN, ADD CONSTRAINT, ADD TTL, ALTER TTL or DROP TTL, INSERT, UPDATE, DELETE and SELECT only`},
+		{name: "a data word alone", text: "DELETE;", wantErr: `the provider analyzes .*`},
 		{name: "an ALTER TABLE of another kind", text: "ALTER TABLE t RENAME TO u;", wantErr: `the provider analyzes .*`},
 		{name: "a short statement", text: "DROP INDEX;", wantErr: `the provider analyzes .*`},
 		{name: "an unclosed quoted name", text: `DROP TABLE "t;`, wantErr: `a quoted name is not closed`},
@@ -116,6 +126,42 @@ func TestSplit_FailurePath(t *testing.T) {
 			statements, err := sqltext.Split(test.text)
 			c.Assert(err, qt.ErrorMatches, test.wantErr)
 			c.Assert(statements, qt.IsNil)
+		})
+	}
+}
+
+// Tokens cover the text with no gap, white space and comments included, and
+// say what each token is.
+func TestTokens_HappyPath(t *testing.T) {
+	c := testcheck.New(t)
+	text := "-- note\nINSERT INTO \"t\" (a) VALUES ('x;y'); /* end */"
+	tokens, err := sqltext.Tokens(text)
+	c.Assert(err, qt.IsNil)
+	var kinds []sqltext.TokenKind
+	var rebuilt string
+	end := 0
+	for _, token := range tokens {
+		c.Assert(token.Start, qt.Equals, end)
+		c.Assert(token.Text, qt.Equals, text[token.Start:token.End])
+		end = token.End
+		rebuilt += token.Text
+		kinds = append(kinds, token.Kind)
+	}
+	c.Assert(rebuilt, qt.Equals, text)
+	c.Assert(kinds, qt.DeepEquals, []sqltext.TokenKind{
+		sqltext.Comment, sqltext.Space, sqltext.Word, sqltext.Space, sqltext.Word, sqltext.Space, sqltext.Quoted, sqltext.Space,
+		sqltext.Punctuation, sqltext.Word, sqltext.Punctuation, sqltext.Space, sqltext.Word, sqltext.Space, sqltext.Punctuation,
+		sqltext.Quoted, sqltext.Punctuation, sqltext.Semicolon, sqltext.Space, sqltext.Comment,
+	})
+}
+
+func TestTokens_FailurePath(t *testing.T) {
+	for _, text := range []string{"SELECT $$x$$", "SELECT 'x", `SELECT "x`, "SELECT 1 /* x", "SELECT \x00"} {
+		t.Run(text, func(t *testing.T) {
+			c := testcheck.New(t)
+			tokens, err := sqltext.Tokens(text)
+			c.Assert(err, qt.IsNotNil)
+			c.Assert(tokens, qt.IsNil)
 		})
 	}
 }

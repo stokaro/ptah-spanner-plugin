@@ -118,6 +118,9 @@ func (p *Provider) Close(ctx context.Context, request *protocol.CloseRequest) er
 	}
 	found.mu.Lock()
 	defer found.mu.Unlock()
+	found.rollbackTransactions(ctx)
+	found.readers = nil
+	found.results = nil
 	found.lockMu.Lock()
 	defer found.lockMu.Unlock()
 	if errors.Join(found.releaseLocks(ctx), found.conn.Close(ctx)) != nil {
