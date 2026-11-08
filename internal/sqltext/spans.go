@@ -66,7 +66,7 @@ func Spans(text string) ([]Span, error) {
 				current.Column = 1 + utf8.RuneCountInString(text[strings.LastIndexByte(text[:token.Start], '\n')+1:token.Start])
 			}
 			if len(current.Words) < leadingWords {
-				current.Words = append(current.Words, upper(token))
+				current.Words = append(current.Words, token.Upper())
 			}
 			last = token.End
 		}

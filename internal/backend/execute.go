@@ -12,6 +12,7 @@ import (
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/catalog"
 	"github.com/stokaro/ptah-spanner-plugin/internal/changestream"
+	"github.com/stokaro/ptah-spanner-plugin/internal/constraintrows"
 )
 
 // Execute runs the units of one request in order and reports how many of them
@@ -29,12 +30,13 @@ import (
 // In a transaction the units run in it and commit with it. A unit that fails
 // there aborts the transaction, which then commits nothing.
 //
-// Outside a transaction a request whose units drop a table or a column that a
-// change stream names is refused before its first unit runs, with a reason
-// that names the table or column and the stream; see changestream. Spanner
-// would refuse the drop itself, but only when it runs, after the units before
-// it have committed. Spanner runs no schema statement in a transaction, so a
-// drop never runs in one.
+// Outside a transaction a request is refused before its first unit runs when
+// Spanner would refuse one of its units for what the database holds, but only
+// when that unit runs, after the units before it have committed: a unit that
+// drops a table or a column a change stream names (see changestream), and a
+// unit after the first that adds a CHECK or a foreign key rows of the table
+// break (see constraintrows). The reason names the unit, the object and why.
+// Spanner runs no schema statement in a transaction, so neither runs in one.
 func (p *Provider) Execute(ctx context.Context, request *protocol.ExecuteRequest) (*protocol.Execution, error) {
 	current, err := p.lookup(request.GetSessionId())
 	if err != nil {
@@ -53,6 +55,9 @@ func (p *Provider) Execute(ctx context.Context, request *protocol.ExecuteRequest
 	defer current.mu.Unlock()
 	if request.GetTransactionId() == "" {
 		if refused := trackedDrop(ctx, current.conn, statements); refused != nil {
+			return refused, nil
+		}
+		if refused := brokenConstraint(ctx, current.conn, statements); refused != nil {
 			return refused, nil
 		}
 	}
@@ -114,6 +119,28 @@ func trackedDrop(ctx context.Context, q catalog.Queryer, statements []string) *p
 	}
 	if reason := changestream.Refusal(drops, tracking, len(statements)); reason != "" {
 		return stoppedAt(0, reason)
+	}
+	return nil
+}
+
+// brokenConstraint refuses statements that add, after their first statement,
+// a CHECK or a foreign key that rows of the table already break, before any of
+// them runs: it reports NOT_APPLIED with a reason that names the first such
+// constraint, its table and how many rows break it. It counts the rows of each
+// addition in statement order and returns nil when none breaks. A count that
+// fails refuses the statements too: Spanner checks the same rows when the
+// unit runs, after the units before it.
+func brokenConstraint(ctx context.Context, q catalog.Queryer, statements []string) *protocol.Execution {
+	for _, addition := range constraintrows.Additions(statements) {
+		rows, err := addition.Count(ctx, q)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return stoppedAt(0, fmt.Sprintf("the call ended before unit 1 of %d ran", len(statements)))
+		case err != nil:
+			return stoppedAt(0, constraintrows.Uncounted(addition, err, len(statements)))
+		case rows > 0:
+			return stoppedAt(0, constraintrows.Refusal(addition, rows, len(statements)))
+		}
 	}
 	return nil
 }

@@ -32,7 +32,7 @@ func Words(text string) (source, words []string, err error) {
 			continue
 		}
 		source = append(source, token.Text)
-		words = append(words, upper(token))
+		words = append(words, token.Upper())
 	}
 	return source, words, nil
 }
