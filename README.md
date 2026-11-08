@@ -136,7 +136,10 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   applied nothing and the statements before it stay applied; the result says how
   many applied and names the server's SQLSTATE. A call that ends while a
   statement runs reports the outcome as unknown, because Spanner keeps applying
-  a schema change its client stopped waiting for.
+  a schema change its client stopped waiting for. Statements that drop a table,
+  or a column, that a change stream names explicitly are refused before the
+  first of them runs, with a reason that names the stream, because Spanner
+  refuses the drop only when it reaches it.
 - **Locks.** `ptah schema apply` and the migration commands take a lock before
   they read the target. Spanner has no session lock, so a lock is a row of the
   table `ptah_locks`, which the provider creates on first use. The row names its

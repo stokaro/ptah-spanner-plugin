@@ -12,6 +12,7 @@ sourceOfTruth:
   - internal/history
   - internal/backend/history.go
   - internal/backend/execute.go
+  - internal/changestream
   - internal/locktable
   - internal/devclean
   - internal/migrationlint
@@ -110,6 +111,11 @@ A call that ends while Spanner is still applying a schema statement reports the
 statement's outcome as unknown, because Spanner keeps applying a schema change
 its client stopped waiting for. Inspect the database before you repair the
 revision row.
+
+A statement that drops a table, or a column, that a change stream names is
+refused before it runs, and the error names the table or column and the stream
+rather than a SQLSTATE. Drop or alter the stream in the migration, before the
+drop: the drop then runs, because each statement is checked when it runs.
 
 ## History tables
 

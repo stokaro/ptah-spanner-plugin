@@ -9,6 +9,9 @@ import (
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
+
+	"github.com/stokaro/ptah-spanner-plugin/internal/catalog"
+	"github.com/stokaro/ptah-spanner-plugin/internal/changestream"
 )
 
 // Execute runs the units of one request in order and reports how many of them
@@ -25,6 +28,13 @@ import (
 //
 // In a transaction the units run in it and commit with it. A unit that fails
 // there aborts the transaction, which then commits nothing.
+//
+// Outside a transaction a request whose units drop a table or a column that a
+// change stream names is refused before its first unit runs, with a reason
+// that names the table or column and the stream; see changestream. Spanner
+// would refuse the drop itself, but only when it runs, after the units before
+// it have committed. Spanner runs no schema statement in a transaction, so a
+// drop never runs in one.
 func (p *Provider) Execute(ctx context.Context, request *protocol.ExecuteRequest) (*protocol.Execution, error) {
 	current, err := p.lookup(request.GetSessionId())
 	if err != nil {
@@ -41,6 +51,11 @@ func (p *Provider) Execute(ctx context.Context, request *protocol.ExecuteRequest
 	}
 	current.mu.Lock()
 	defer current.mu.Unlock()
+	if request.GetTransactionId() == "" {
+		if refused := trackedDrop(ctx, current.conn, statements); refused != nil {
+			return refused, nil
+		}
+	}
 	var run interface {
 		Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
 	} = current.conn
@@ -76,6 +91,31 @@ func (p *Provider) Execute(ctx context.Context, request *protocol.ExecuteRequest
 		applied++
 	}
 	return &protocol.Execution{Outcome: protocol.Execution_APPLIED, AppliedCount: applied}, nil
+}
+
+// trackedDrop refuses statements that drop a table or a column a change stream
+// names, before any of them runs: it reports NOT_APPLIED with a reason that
+// names the first such drop and its streams. It returns nil when no statement
+// drops one, and reads the catalog only when a statement drops something. A
+// catalog it cannot read refuses the statements too: the read is what tells
+// a drop Spanner takes from one it refuses after the statements before it.
+func trackedDrop(ctx context.Context, q catalog.Queryer, statements []string) *protocol.Execution {
+	drops := changestream.Drops(statements)
+	if len(drops) == 0 {
+		return nil
+	}
+	tracking, err := changestream.Read(ctx, q)
+	if err != nil {
+		if ctx.Err() != nil {
+			return stoppedAt(0, fmt.Sprintf("the call ended before unit 1 of %d ran", len(statements)))
+		}
+		return stoppedAt(0, fmt.Sprintf("the provider could not read which tables and columns change streams name, so it ran none of the %d units, "+
+			"which drop a table or a column", len(statements)))
+	}
+	if reason := changestream.Refusal(drops, tracking, len(statements)); reason != "" {
+		return stoppedAt(0, reason)
+	}
+	return nil
 }
 
 // failedAt reports a statement that failed with err after applied units of
