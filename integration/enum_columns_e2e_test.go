@@ -117,3 +117,75 @@ func TestHostAddsEnumColumnsToAKeptTableE2E(t *testing.T) {
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Contains, synced)
 }
+
+// skipBeforeEnumCheckDecisions skips the test on a host that may compare the
+// CHECK of an enum column by its own reading of the two texts: one that asks
+// the provider (schema.check-equivalence) about the declared CHECKs before it
+// builds the enum columns, so the CHECK an enum column is built under never
+// reaches the provider, and the host reads Spanner's `= ANY (ARRAY[...])`
+// against the declared IN list as a rewrite it cannot judge and plans nothing
+// (stokaro/ptah#5791, S81 of stokaro/ptah#4204). The change carries no
+// contract feature, so the decision reads the provider-sdk version the host
+// pins: every Ptah release that predates the change, up to v0.23.0, pins
+// provider-sdk v0.30.0 or older. A host master between that pin and the change
+// fails the test, which only a master leg builds.
+func skipBeforeEnumCheckDecisions(c *qt.C) {
+	c.Helper()
+	host, _ := hostManifest(c)
+	info, err := buildinfo.ReadFile(host)
+	c.Assert(err, qt.IsNil)
+	for _, dependency := range info.Deps {
+		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+			continue
+		}
+		var major, minor, patch int
+		if _, err := fmt.Sscanf(dependency.Version, "v%d.%d.%d", &major, &minor, &patch); err == nil && major == 0 && (minor < 30 || minor == 30 && patch == 0) {
+			c.Skipf("the host pins provider-sdk %s: it may ask about a CHECK before it builds the enum columns", dependency.Version)
+		}
+	}
+}
+
+// enumValues is a YAML schema document of table t with the enum column k of
+// the values listed.
+func enumValues(values string) string {
+	return "tables:\n  t:\n    columns:\n      id: {type: bigint, primary: true}\n      k: {type: ENUM, enum: [" + values + "]}\n"
+}
+
+// A changed list of an enum column's values replaces the column's CHECK. The
+// host asks the provider whether the CHECK Spanner keeps,
+// `(k = ANY (ARRAY['a'::text, 'b'::text]))`, is the declared one, and the
+// provider says it is not, so the CHECK is dropped and added under its name,
+// without IF EXISTS; the next plan is synced, and Spanner takes a value of the
+// new list and refuses one outside it. Ptah's built-in Spanner engine planned
+// nothing for the change, and neither did a host that asked about the CHECKs
+// before it built the enum columns (stokaro/ptah#4204 S81).
+func TestHostReplacesTheCheckOfAnEnumColumnWhoseValuesChangeE2E(t *testing.T) {
+	tests := []struct{ name, values, check, accepted, refused string }{
+		{name: "a value added", values: "a, b, c", check: "k IN ('a', 'b', 'c')", accepted: "c", refused: "d"},
+		{name: "a value removed", values: "a", check: "k IN ('a')", accepted: "a", refused: "b"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			skipBeforeEnumColumns(c)
+			skipBeforeEnumCheckDecisions(c)
+			address := withSearchPath(c, freshDatabase(c))
+			held := filepath.Join(writeFiles(c, map[string]string{"schema.yaml": enumValues("a, b")}), "schema.yaml")
+			output, err := hostCommand(c, "schema", "apply", "--db-url", address, "--schema-file", held, "--auto-approve")
+			c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+			declared := filepath.Join(writeFiles(c, map[string]string{"schema.yaml": enumValues(test.values)}), "schema.yaml")
+			output, err = hostCommand(c, "schema", "apply", "--db-url", address, "--schema-file", declared, "--auto-approve")
+			c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+			c.Assert(output, qt.Contains, "ALTER TABLE \"t\" DROP CONSTRAINT \"t_k_check\";\n"+
+				"ALTER TABLE \"t\" ADD CONSTRAINT \"t_k_check\" CHECK ("+test.check+");\n")
+			output, err = hostCommand(c, "schema", "apply", "--db-url", address, "--schema-file", declared, "--dry-run")
+			c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+			c.Assert(output, qt.Contains, synced)
+			conn := connect(c, address)
+			_, err = conn.Exec(c.Context(), "INSERT INTO t (id, k) VALUES (1, '"+test.accepted+"')")
+			c.Assert(err, qt.IsNil)
+			_, err = conn.Exec(c.Context(), "INSERT INTO t (id, k) VALUES (2, '"+test.refused+"')")
+			c.Assert(err, qt.ErrorMatches, `.*Check constraint .*t_k_check.* is violated.*`)
+		})
+	}
+}
