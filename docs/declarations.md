@@ -467,14 +467,19 @@ rendering: `WHERE score > 10` reads back as `WHERE (score > '10'::bigint)`, a
 join in parentheses, a `LIMIT` cast to `bigint`, `t AS x` as `t x` with its
 columns unqualified, a `SELECT *` with every column named and a `UNION`'s
 columns qualified. A declared query converges with it whatever its case,
-spacing and quoting. With a host of contract 25.37 the provider also reads both
-queries into one form, typed by the declared columns, so a query in any of the
-spellings above converges too. A query it cannot read, such as one with a CASE,
-a subquery, an aggregate call or `GROUP BY`, is left to the host's comparison
-of the two texts, and a condition Spanner rewrites there is replaced on every
-plan until the declaration uses the stored spelling. A host of contracts 25.33
-to 25.36 asks the provider without the declared columns: a `SELECT *` view is
-then replaced on every plan. `ptah db read` prints the stored spelling.
+spacing and quoting. `ptah db read` prints the stored spelling.
+
+How a view whose query Spanner rewrites converges depends on the host:
+
+- With a host of contract 25.37 the provider reads both queries into one form,
+  typed by the declared columns, so a query in any of the spellings above
+  converges too.
+- A query the provider cannot read, such as one with a CASE, a subquery, an
+  aggregate call or `GROUP BY`, is left to the host's comparison of the two
+  texts. A condition Spanner rewrites there is replaced on every plan until the
+  declaration uses the stored spelling.
+- A host of contracts 25.33 to 25.36 asks the provider without the declared
+  columns, so a `SELECT *` view is replaced on every plan.
 
 A materialized view, `WITH CHECK OPTION`, a view option such as
 `security_invoker` and a view comment are refused: Spanner has no materialized
