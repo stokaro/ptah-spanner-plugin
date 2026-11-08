@@ -228,9 +228,17 @@ them is part of stokaro/ptah#4204.
 
 - **Change streams.** A read does not describe change streams: it reports
   only which tables and columns they name, for the plan to refuse a drop (see
-  [Changes the provider refuses](#changes-the-provider-refuses)). An export
-  writes no change stream and carries no line that marks change streams as not
-  described.
+  [Changes the provider refuses](#changes-the-provider-refuses)), and an
+  export writes no change stream. On a Ptah of provider contract 25.41 every
+  read records them as not described, with a stream in the database or
+  without one, so the header of an HCL export, from `ptah schema inspect` and
+  from `ptah-compat schema inspect`, carries the line below and the JSON of
+  `ptah schema inspect` lists the record. A plan does not take their absence
+  for a removal. On an older Ptah an export says nothing about change streams.
+
+  ```text
+  // ptah:not-described change_stream reason=unsupported provenance=derived-from-target
+  ```
 - **The seed ledger on an older Ptah.** On a Ptah of provider contract 25.28
   or older, after `ptah seed` has run, `ptah schema apply` plans `DROP TABLE
   "schema_seeds"` when the declaration does not name the table. Review the

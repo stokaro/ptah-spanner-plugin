@@ -110,6 +110,28 @@ func TestDescription_LeavesTheAdditionsOfContract2529ToAHostThatListsThem(t *tes
 	c.Assert(engine.GetSqlSchema().GetTableClauses(), qt.HasLen, 0)
 }
 
+// The engine declares change streams as a kind its reads leave out (contract
+// 25.41), for a host that lists schema.not-described; a host that does not
+// receives neither the feature nor the kind.
+func TestDescription_DeclaresChangeStreamsNotDescribed(t *testing.T) {
+	tests := []struct {
+		name     string
+		features []string
+		kinds    []string
+	}{
+		{name: "a host that lists the feature", features: []string{provider.NotDescribedFeature}, kinds: []string{"change_stream"}},
+		{name: "a host that does not", features: nil},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			negotiated := provider.NegotiatedDescription(backend.Description(), test.features)
+			c.Assert(provider.ValidateDescription(negotiated, nil), qt.IsNil)
+			c.Assert(negotiated.GetEngines()[0].GetNotDescribedKinds(), qt.DeepEquals, test.kinds)
+		})
+	}
+}
+
 // Migrations keep their records through the provider: revision history, the
 // log and tags, transactions for the records, and a split of each body into
 // the statements Spanner runs one by one.

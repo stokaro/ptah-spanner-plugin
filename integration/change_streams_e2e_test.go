@@ -4,6 +4,8 @@ package integration_test
 
 import (
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -179,4 +181,63 @@ func TestHostMigrationDropsAChangeStreamThenItsTableE2E(t *testing.T) {
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(queryRows(c, address, `SELECT version, state, applied, total FROM schema_migrations`), qt.DeepEquals, []string{"1700000001 applied 2 2"})
 	c.Assert(tables(c, address), qt.DeepEquals, []string{"ptah_locks", "schema_migrations", "schema_migrations_log"})
+}
+
+// changeStreamsNotDescribed is the header line Ptah's built-in Spanner engine
+// wrote into every document made from a read, and the provider's reads record
+// under contract 25.41.
+const changeStreamsNotDescribed = "// ptah:not-described change_stream reason=unsupported provenance=derived-from-target"
+
+// changeStreamsRecord matches the record in the JSON of `ptah schema inspect`.
+const changeStreamsRecord = `(?s).*"kind": "change_stream",\s+"name": "",\s+"reason": "unsupported",\s+"provenance": "derived-from-target".*`
+
+// Every read says that it does not describe change streams, with a stream in
+// the database and without one, as Ptah's built-in Spanner engine said it: the
+// record belongs to the target, since listing only the streams a read found
+// would say that no other one exists. The header of `ptah schema inspect`
+// carries the line, its JSON the record, and an export of the read applies as
+// a schema with nothing to change, so the host reads the line back.
+func TestHostSaysAReadDoesNotDescribeChangeStreamsE2E(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup []string
+	}{
+		{name: "a stream FOR t", setup: append(slices.Clone(trackedTable), `CREATE CHANGE STREAM cs1 FOR t`)},
+		{name: "a stream FOR ALL", setup: append(slices.Clone(trackedTable), `CREATE CHANGE STREAM cs2 FOR ALL`)},
+		{name: "no stream", setup: trackedTable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			skipBeforeNotDescribed(c)
+			address := withSearchPath(c, freshDatabase(c))
+			execSQL(c, address, test.setup...)
+
+			exported, err := hostCommand(c, "schema", "inspect", "--db-url", address, "--format", "hcl")
+			c.Assert(err, qt.IsNil, qt.Commentf("%s", exported))
+			c.Assert(exported, qt.Contains, changeStreamsNotDescribed+"\n")
+			output, err := hostCommand(c, "schema", "inspect", "--db-url", address, "--format", "json")
+			c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+			c.Assert(output, qt.Matches, changeStreamsRecord)
+
+			_, document, found := strings.Cut(exported, "// Code generated")
+			c.Assert(found, qt.IsTrue, qt.Commentf("%s", exported))
+			hcl := filepath.Join(writeFiles(c, map[string]string{"schema.hcl": "// Code generated" + document}), "schema.hcl")
+			output, err = hostCommand(c, "schema", "apply", "--db-url", address, "--schema-file", hcl, "--dry-run")
+			c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+			c.Assert(output, qt.Contains, synced)
+		})
+	}
+}
+
+// `ptah-compat schema inspect` writes the same line into the header of its
+// HCL, as it did when the host built in a Spanner engine.
+func TestCompatSchemaInspectSaysItDoesNotDescribeChangeStreamsE2E(t *testing.T) {
+	c := testcheck.New(t)
+	skipBeforeNotDescribed(c)
+	address := withSearchPath(c, freshDatabase(c))
+	execSQL(c, address, append(slices.Clone(trackedTable), `CREATE CHANGE STREAM cs1 FOR t`)...)
+	output, err := compatCommand(c, "schema", "inspect", "--url", address)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Contains, changeStreamsNotDescribed+"\n")
 }

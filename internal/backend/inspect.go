@@ -60,6 +60,7 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		Coverage:       &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
 	}
 	snapshot.Coverage.Kinds = []*protocol.ModelKindCoverage{policyCoverage(current.database, request.GetSchemas())}
+	snapshot.NotDescribed = notDescribed(snapshot.GetTargetFeatures())
 	tracking, err := streamTracking(ctx, current, snapshot.GetTargetFeatures())
 	if err != nil {
 		return nil, err
@@ -118,8 +119,30 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 	return snapshot, nil
 }
 
-// changeStreamKind is the kind of the removal blockers a read reports.
+// changeStreamKind is the kind of the removal blockers a read reports, and the
+// kind of object it records as not described.
 const changeStreamKind = "change_stream"
+
+// notDescribedKinds are the kinds of object the engine holds and the provider
+// does not model, which every read records as not described.
+func notDescribedKinds() []string {
+	return []string{changeStreamKind}
+}
+
+// notDescribed is what a read records as not described, for a host that
+// carries the records (schema.not-described): every change stream, whatever
+// the database holds. A change stream has a lifecycle of its own and the
+// provider reads none, so a document made from the read must not let its
+// silence read as the absence of every stream. The record is the target's, as
+// Ptah's built-in Spanner engine recorded it: listing only the streams a read
+// found would say that no other one exists. A host without the feature
+// receives none.
+func notDescribed(features []string) []*protocol.SchemaCoverageLimit {
+	if !slices.Contains(features, provider.NotDescribedFeature) {
+		return nil
+	}
+	return []*protocol.SchemaCoverageLimit{{Kind: changeStreamKind, Reason: "unsupported", Provenance: "derived-from-target"}}
+}
 
 // streamTracking reads what the database's change streams name, for a host
 // that carries removal blockers: Spanner refuses to drop a table a stream
