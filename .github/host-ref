@@ -1,0 +1,2 @@
+# The live legs build this host branch: the header test needs the host adoption of contract 25.41, stokaro/ptah#5810.
+feat/4204-s16-adopt-not-described
