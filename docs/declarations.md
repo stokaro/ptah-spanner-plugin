@@ -186,9 +186,11 @@ ALTER TABLE "t" ADD COLUMN "d" bigint;
 ALTER TABLE "t" ALTER COLUMN "d" SET NOT NULL;
 ```
 
-On a table that holds rows, the second statement fails, because no row has a
-value for the new column. Give the column a default, which Spanner writes into
-every row, or fill the column before you make it `NOT NULL`.
+On a table that holds rows, no row has a value for the new column, so the
+provider refuses the run before its first statement, and the column is not
+added; see [Changes the provider refuses](limitations.md#changes-the-provider-refuses).
+Give the column a default, which Spanner writes into every row, or fill the
+column before you make it `NOT NULL`.
 
 ### Changing a column
 
@@ -201,6 +203,11 @@ A column of a kept table changes with `ALTER TABLE ... ALTER COLUMN`:
 
 Any other type change is refused before a statement is sent, such as
 `changing column "b" of table "t" from bigint to double precision: Spanner changes a column's type only between character varying and bytea, or the length of character varying`.
+
+`SET NOT NULL` over a null, and a shorter `character varying` over a longer
+value, are refused before the first statement of a run, and so is an index
+made unique over rows that share a key; see
+[Changes the provider refuses](limitations.md#changes-the-provider-refuses).
 
 A dropped column loses its indexes first, and a dropped table loses its indexes
 and its foreign keys first.

@@ -117,12 +117,14 @@ refused before it runs, and the error names the table or column and the stream
 rather than a SQLSTATE. Drop or alter the stream in the migration, before the
 drop: the drop then runs, because each statement is checked when it runs.
 
-A statement that adds a `CHECK` or a foreign key is left to Spanner. The
-provider counts the rows that break a new constraint only after the first
-statement of a run, and a migration runs one statement at a time. A migration
-that drops a `CHECK` and adds one the rows break therefore stops after the
-drop, and the table is left without the `CHECK`. Add the new `CHECK` under
-another name before you drop the old one, or fix the rows first.
+A statement that adds a rule the rows must keep, such as a `CHECK`, a foreign
+key, a unique index, `NOT NULL` or a shorter `character varying`, is left to
+Spanner. The provider counts the rows that break a new rule only after the
+first statement of a run, and a migration runs one statement at a time. A
+migration that drops a `CHECK` or an index and adds one the rows break
+therefore stops after the drop, and the table is left without it. Add the new
+`CHECK` or unique index under another name before you drop the old one, or fix
+the rows first.
 
 ## History tables
 

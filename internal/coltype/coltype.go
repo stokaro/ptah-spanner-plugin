@@ -173,6 +173,28 @@ func Convertible(from, to string) bool {
 	return fromArray == toArray && textOrBytes(fromElement) && textOrBytes(toElement)
 }
 
+// CharacterLimit returns the most characters a value of a canonical text type
+// holds, and whether the type is an array of such values: n for character
+// varying(n), and the length Spanner treats as no length at all for character
+// varying. It reports false for any other type. Spanner counts characters, not
+// bytes: measured, a column of `héllo` changes to varchar(5) and refuses
+// varchar(4) with "it has a value of length 5".
+func CharacterLimit(canonical string) (characters int64, array, ok bool) {
+	element, array := strings.CutSuffix(canonical, "[]")
+	if element == "character varying" {
+		return unboundedVarchar, array, true
+	}
+	digits, found := strings.CutPrefix(element, "character varying(")
+	if !found {
+		return 0, false, false
+	}
+	characters, err := strconv.ParseInt(strings.TrimSuffix(digits, ")"), 10, 64)
+	if err != nil || !strings.HasSuffix(digits, ")") {
+		return 0, false, false
+	}
+	return characters, array, true
+}
+
 func textOrBytes(canonical string) bool {
 	return canonical == "bytea" || canonical == "character varying" || strings.HasPrefix(canonical, "character varying(")
 }
