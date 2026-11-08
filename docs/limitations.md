@@ -184,7 +184,11 @@ The counts follow Spanner's rules:
   to convert such a value.
 
 The count reads the whole table, as Spanner's own check does. A longer limit
-is not counted.
+is not counted. The read comes on top of Spanner's own check, which runs again
+when the statement adds the rule, and the count for a unique index also groups
+the rows by the key. The counts were measured on `pgadapter-emulator` with
+small tables only. On a large table, expect the run to take longer and to read
+more, and keep the query time limit in mind.
 
 The count reads the rows as they are before the run, so the provider leaves a
 rule to Spanner when a statement before it may change what the count reads: a
