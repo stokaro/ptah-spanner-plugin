@@ -333,6 +333,18 @@ On a kept table the column is added without the `CHECK`, which Spanner refuses
 inside `ADD COLUMN`, and `ALTER TABLE ... ADD CONSTRAINT` follows it. Spanner
 refuses a value the `CHECK` does not list.
 
+A changed list of values replaces the `CHECK`: Ptah asks the provider whether
+the `CHECK` Spanner keeps, `(kind = ANY (ARRAY['draft'::text]))`, is the
+declared one, and the plan drops it and adds the new one under the same name:
+
+```sql
+ALTER TABLE "posts" DROP CONSTRAINT "posts_kind_check";
+ALTER TABLE "posts" ADD CONSTRAINT "posts_kind_check" CHECK (kind IN ('draft', 'live'));
+```
+
+A Ptah that does not ask the provider about the `CHECK` it builds for an enum
+column plans nothing for a changed list.
+
 The provider states this form to Ptah (provider contract 25.31), and Ptah
 builds the column before it compares and plans. An older Ptah without a
 built-in Spanner engine keeps the enum a type of its own and refuses it with

@@ -171,6 +171,11 @@ them is part of stokaro/ptah#4204.
   query text, the plan writes it, and Spanner refuses the statement when it
   runs, after the statements before it. Leave the clause out: Spanner's views
   cannot be written through.
+- **A `CHECK` the rows already break.** A changed `CHECK`, an enum column's
+  list of values included, is replaced by `DROP CONSTRAINT` and then `ADD
+  CONSTRAINT`. Spanner runs each statement on its own, so when a row breaks
+  the new `CHECK` the drop has run and Spanner refuses the add: the table is
+  left without the `CHECK`. Check the rows before you narrow a `CHECK`.
 - **A condition Spanner rewrites.** A view or a `CHECK` whose text the provider
   cannot read in Spanner's spelling is replaced on every plan, and so is any
   rewritten view under a host older than contract 25.37; see
