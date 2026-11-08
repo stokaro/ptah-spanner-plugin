@@ -47,7 +47,10 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   A read lists the schemas it covers to a Ptah that carries schemas (25.29):
   the requested ones, or every schema but Spanner's catalogs when the request
   names none. The seed ledger `schema_seeds` is reported as reserved to a Ptah
-  that negotiates it (25.29), so a plan never drops it.
+  that negotiates it (25.29), so a plan never drops it. Every read records
+  change streams as not described to a Ptah that carries such records
+  (25.41), so a document made from the read says that it does not describe
+  them, as Ptah's built-in Spanner engine said it.
 - **Views and sequences.** A read reports each view with its query as Spanner
   stores it, and each sequence with its counter start. A view is created with
   `CREATE VIEW`, replaced with `CREATE OR REPLACE VIEW` and dropped with `DROP

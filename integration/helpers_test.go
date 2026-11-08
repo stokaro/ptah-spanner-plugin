@@ -359,6 +359,28 @@ func skipBeforeRemovalBlockers(c *qt.C) {
 	}
 }
 
+// skipBeforeNotDescribed skips the test when the host pins a provider-sdk
+// older than v0.39.0, the first release of contract 25.41, whose
+// schema.not-described lets a read record change streams as not described:
+// such a host receives no record, and a document made from the read says
+// nothing about change streams. A host that replaces the module builds it from
+// its own tree and is not older.
+func skipBeforeNotDescribed(c *qt.C) {
+	c.Helper()
+	host, _ := hostManifest(c)
+	info, err := buildinfo.ReadFile(host)
+	c.Assert(err, qt.IsNil)
+	for _, dependency := range info.Deps {
+		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+			continue
+		}
+		var major, minor int
+		if _, err := fmt.Sscanf(dependency.Version, "v%d.%d.", &major, &minor); err == nil && major == 0 && minor < 39 {
+			c.Skipf("the host pins provider-sdk %s, which predates contract 25.41", dependency.Version)
+		}
+	}
+}
+
 // queryRows runs a catalog query on the database address names and returns
 // each row as its fields' text joined by spaces.
 func queryRows(c *qt.C, address, query string) []string {

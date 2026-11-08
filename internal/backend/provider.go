@@ -221,6 +221,10 @@ func providerFeatures() []string {
 		// a table or a column one names, before a statement exists; see
 		// changestream and tableplan.blockedTable.
 		provider.RemovalBlockersFeature,
+		// The engine declares change streams as a kind its reads leave out,
+		// and every read records them as not described, so a document made
+		// from a read says so; see notDescribedKinds and notDescribed.
+		provider.NotDescribedFeature,
 		// The host empties a dev database through the provider and asks it
 		// whether a replayed statement stays inside one; see devclean.go and
 		// replay.go.
@@ -250,8 +254,8 @@ func engineFeatures() []string {
 }
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider, below the one the SDK it is built with speaks (25.39). The
-// additions of contracts 25.28 to 25.39 that it uses are negotiated, and a
+// provider, below the one the SDK it is built with speaks (25.41). The
+// additions of contracts 25.28 to 25.41 that it uses are negotiated, and a
 // host that lists none of them is served as before they existed:
 //
 //   - without observed constraints, a read refuses a table's foreign keys and
@@ -268,7 +272,10 @@ func engineFeatures() []string {
 //     VIEW IF EXISTS of a table, which Spanner takes and ignores;
 //   - without removal blockers (contract 25.39), a read reports no change
 //     stream, so a plan may drop a table or a column one names, and the
-//     executor refuses the drop before the run's first statement.
+//     executor refuses the drop before the run's first statement;
+//   - without not-described kinds (contract 25.41), a read leaves change
+//     streams out without saying so, and a document made from it does not
+//     say that it does not describe them.
 //
 // The live tests run against such a host and against one that negotiates
 // them. An older host is refused before a session opens.
@@ -307,6 +314,7 @@ func Description() *protocol.Description {
 			HclSource:          &protocol.HCLSourceDeclaration{Blocks: []*protocol.HCLSourceBlock{policysource.HCLPlatformBlock()}},
 			SqlSchema:          sqlSchema(),
 			CommonObjects:      commonobject.Support(),
+			NotDescribedKinds:  notDescribedKinds(),
 		}},
 	}
 }
