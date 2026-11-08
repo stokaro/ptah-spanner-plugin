@@ -34,8 +34,9 @@ import (
 // Spanner would refuse one of its units for what the database holds, but only
 // when that unit runs, after the units before it have committed: a unit that
 // drops a table or a column a change stream names (see changestream), and a
-// unit after the first that adds a CHECK or a foreign key rows of the table
-// break (see constraintrows). The reason names the unit, the object and why.
+// unit after the first that adds a rule rows of the table break: a CHECK, a
+// foreign key, a unique index, NOT NULL or a shorter character limit (see
+// constraintrows). The reason names the unit, the object and why.
 // Spanner runs no schema statement in a transaction, so neither runs in one.
 func (p *Provider) Execute(ctx context.Context, request *protocol.ExecuteRequest) (*protocol.Execution, error) {
 	current, err := p.lookup(request.GetSessionId())
@@ -124,12 +125,12 @@ func trackedDrop(ctx context.Context, q catalog.Queryer, statements []string) *p
 }
 
 // brokenConstraint refuses statements that add, after their first statement,
-// a CHECK or a foreign key that rows of the table already break, before any of
-// them runs: it reports NOT_APPLIED with a reason that names the first such
-// constraint, its table and how many rows break it. It counts the rows of each
-// addition in statement order and returns nil when none breaks. A count that
-// fails refuses the statements too: Spanner checks the same rows when the
-// unit runs, after the units before it.
+// a rule that rows of the table already break, before any of them runs: it
+// reports NOT_APPLIED with a reason that names the first such rule, its table
+// and how many rows break it. It counts the rows of each addition in statement
+// order and returns nil when none breaks. A count that fails refuses the
+// statements too: Spanner checks the same rows when the unit runs, after the
+// units before it.
 func brokenConstraint(ctx context.Context, q catalog.Queryer, statements []string) *protocol.Execution {
 	for _, addition := range constraintrows.Additions(statements) {
 		rows, err := addition.Count(ctx, q)

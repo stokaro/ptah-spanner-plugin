@@ -257,3 +257,30 @@ func TestLiteralSQL(t *testing.T) {
 		})
 	}
 }
+
+// A text type's limit is its length, or the length Spanner treats as none for
+// one without; an array carries its element's limit. Any other type has none.
+func TestCharacterLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		canonical  string
+		characters int64
+		array, ok  bool
+	}{
+		{name: "a length", canonical: "character varying(3)", characters: 3, ok: true},
+		{name: "no length", canonical: "character varying", characters: 2621440, ok: true},
+		{name: "an array", canonical: "character varying(10)[]", characters: 10, array: true, ok: true},
+		{name: "bytes", canonical: "bytea"},
+		{name: "an integer", canonical: "bigint"},
+		{name: "a length that is no number", canonical: "character varying(x)"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			characters, array, ok := coltype.CharacterLimit(test.canonical)
+			c.Assert(characters, qt.Equals, test.characters)
+			c.Assert(array, qt.Equals, test.array)
+			c.Assert(ok, qt.Equals, test.ok)
+		})
+	}
+}

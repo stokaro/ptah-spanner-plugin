@@ -114,7 +114,8 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
     `character varying` of any length and `bytea`, which is all Spanner changes
     in place; its default; and `NOT NULL`. A `NOT NULL` column without a
     default is added nullable and then made `NOT NULL`, because Spanner refuses
-    to add it otherwise.
+    to add it otherwise; on a table that holds rows the run is refused before
+    its first statement.
   - A dropped table, and a dropped column, lose their indexes first. A dropped
     table loses its foreign keys first too, after the tables the plan creates,
     so `ptah migrations generate` writes a down file that drops every key
@@ -144,11 +145,12 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   or a column, that a change stream names explicitly are refused before the
   first of them runs, with a reason that names the stream, because Spanner
   refuses the drop only when it reaches it: a plan from an older Ptah, or a
-  migration someone wrote, can hold one. For the same reason, a `CHECK` or a
-  foreign key that rows of the table already break is refused before the first
-  statement runs: the provider counts the rows that break each constraint a
-  run adds after its first statement, so a plan that replaces such a
-  constraint applies nothing.
+  migration someone wrote, can hold one. For the same reason, a rule that rows
+  of the table already break is refused before the first statement runs: a
+  `CHECK`, a foreign key, a unique index, `NOT NULL` or a shorter `character
+  varying`. The provider counts the rows that break each rule a run adds after
+  its first statement, so a plan that replaces such a constraint or index
+  applies nothing.
 - **Locks.** `ptah schema apply` and the migration commands take a lock before
   they read the target. Spanner has no session lock, so a lock is a row of the
   table `ptah_locks`, which the provider creates on first use. The row names its

@@ -240,22 +240,24 @@ func TestHostAddsANotNullColumnToATableWithARowE2E_HappyPath(t *testing.T) {
 
 // A NOT NULL column without a default is added nullable and then made NOT
 // NULL. On a table holding a row the row has no value for it, so Spanner
-// refuses the SET NOT NULL; it runs each statement on its own, so the column
-// stays, nullable, and the next plan is the note and the SET NOT NULL alone.
+// would refuse the SET NOT NULL after the ADD COLUMN committed. The provider
+// counts the rows before the first statement and refuses the run: the column
+// is not added, and the next plan is the same two statements.
 func TestHostAddsANotNullColumnToATableWithARowE2E_FailurePath(t *testing.T) {
 	c := testcheck.New(t)
 	address := withSearchPath(c, freshDatabase(c))
 	execSQL(c, address, "CREATE TABLE items (id bigint PRIMARY KEY)", "INSERT INTO items (id) VALUES (1)")
 	const note = "-- SPANNER: SET NOT NULL fails if any row of \"items\" holds NULL in \"name\"; the column declares no default to fill it with.\n"
+	const plan = "ALTER TABLE \"items\" ADD COLUMN \"name\" TEXT;\n" + note + "ALTER TABLE \"items\" ALTER COLUMN \"name\" SET NOT NULL;\n"
 	output, err := policyApply(c, address, "schema.yaml", notNullBase+notNullName, apply)
 	c.Assert(err, qt.IsNotNil)
-	c.Assert(output, qt.Contains, "ALTER TABLE \"items\" ADD COLUMN \"name\" TEXT;\n"+note+"ALTER TABLE \"items\" ALTER COLUMN \"name\" SET NOT NULL;\n")
+	c.Assert(output, qt.Contains, plan)
+	c.Assert(output, qt.Contains, `NOT_APPLIED (0 units confirmed applied): unit 2 of 2 makes column "name" of table "items" NOT NULL, which 1 row breaks, so no unit ran`)
 	c.Assert(queryRows(c, address, `SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'items' ORDER BY ordinal_position`),
-		qt.DeepEquals, []string{"id NO", "name YES"})
+		qt.DeepEquals, []string{"id NO"})
 	output, err = policyApply(c, address, "schema.yaml", notNullBase+notNullName, dryRun)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
-	c.Assert(output, qt.Contains, note+"ALTER TABLE \"items\" ALTER COLUMN \"name\" SET NOT NULL;\n")
-	c.Assert(output, qt.Not(qt.Contains), "ADD COLUMN")
+	c.Assert(output, qt.Contains, plan)
 }
 
 // keywordColumns are columns named after the words that open a table-level

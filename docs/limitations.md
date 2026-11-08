@@ -136,37 +136,67 @@ and a stream `FOR t` names no column of `t`, so neither stops a drop. `ptah
 migrations up` runs each statement of a migration on its own, so the statements
 of a migration before the drop have run when the drop is refused.
 
-A `CHECK` or a foreign key that rows of the table already break is refused
-before the first statement of a run too. Ptah replaces a changed constraint,
-an enum column's list of values included, by `DROP CONSTRAINT` and then `ADD
-CONSTRAINT`. Spanner checks a new constraint against every row, but only when
-the statement runs: the drop would commit, Spanner would refuse the add
-(`Check constraint ... is violated`), and the table would be left without the
-constraint. So before the first statement the provider counts the rows that
-break each constraint the run adds after its first statement. When a row
-breaks one, nothing of the run is sent, and the reason names the unit, the
-constraint, the table and how many rows break it:
+A rule that rows of the table already break is refused before the first
+statement of a run too: a `CHECK`, a foreign key, a unique index, `NOT NULL`,
+or a shorter limit on a column's characters.
+
+Ptah replaces a changed constraint, an enum column's list of values included,
+by `DROP CONSTRAINT` and then `ADD CONSTRAINT`, makes an index unique by `DROP
+INDEX` and then `CREATE UNIQUE INDEX`, and changes each column's nullability
+and type in a statement of its own. Spanner checks a new rule against every
+row, but only when the statement runs: the statements before it would commit,
+Spanner would refuse the rule (`Check constraint ... is violated`, `Found
+uniqueness violation`), and the table would be left without the constraint or
+the index, or with half of the change.
+
+So before the first statement the provider counts the rows that break each
+rule the run adds after its first statement. When a row breaks one, nothing of
+the run is sent, and the reason names the unit, the rule, the table and how
+many rows break it:
 
 ```text
 unit 2 of 2 adds CHECK "items_kind_check" to table "items", which 1 row breaks, so no unit ran: Spanner refuses to add a constraint a row breaks; update or delete the rows that break it before adding the constraint
 ```
 
-A row breaks a `CHECK` when the expression is false for it; a null result
-passes, as Spanner passes it. A row breaks a foreign key when every key column
-holds a value and no row of the referenced table holds those values. The count
-reads the whole table, as Spanner's own check does.
+The reason for an index made unique reads the same way:
+
+```text
+unit 2 of 2 creates unique index "t_a" on table "t", which 2 rows break, so no unit ran: Spanner refuses a unique index over rows that share a key; update or delete the rows that share a key before creating the index
+```
+
+The counts follow Spanner's rules:
+
+- A row breaks a `CHECK` when the expression is false for it; a null result
+  passes.
+- A row breaks a foreign key when every key column holds a value and no row of
+  the referenced table holds those values.
+- A row breaks a unique index when every key column holds a value and another
+  row holds the same key. Spanner leaves a row with a null key column out of a
+  unique index, so two rows of `(5, NULL)` share no key.
+- A row breaks `NOT NULL` when it holds a null, also in a column with a
+  default: Spanner does not fill it in. A `NOT NULL` column without a default
+  that the plan adds to a table holds a null in every row, so every row breaks
+  it.
+- A row breaks a shorter `character varying` when its value, or an element of
+  its array, is longer in characters, as Spanner counts it: a `bytea` value of
+  `héllo`, 6 bytes, fits `varchar(5)`. A `bytea` value that is not valid UTF-8
+  fails the count, and the run is refused with the SQLSTATE, as Spanner refuses
+  to convert such a value.
+
+The count reads the whole table, as Spanner's own check does. A longer limit
+is not counted.
 
 The count reads the rows as they are before the run, so the provider leaves a
-constraint to Spanner when a statement before it may change what the count
-reads: a statement that changes rows, `CREATE TABLE` or `DROP TABLE` of the
-table, a change of a column the constraint reads, and any statement the
-provider does not know to leave rows alone. A `CHECK` on a column the same run
-adds is one of these: Spanner fills the column with its default in every row
-first. A constraint the first statement adds is not counted, because Spanner's
-refusal of it leaves nothing applied. So `ptah migrations up`, which runs each
-statement of a migration on its own, still stops after the drop when a row
-breaks the new constraint. In a migration you write, add the new `CHECK` under
-another name before you drop the old one, or fix the rows first.
+rule to Spanner when a statement before it may change what the count reads: a
+statement that changes rows, `CREATE TABLE` or `DROP TABLE` of the table, a
+change of a column the rule reads, and any statement the provider does not know
+to leave rows alone. A `CHECK` on a column the same run adds is one of these:
+Spanner fills the column with its default in every row first. A rule the first
+statement adds is not counted, because Spanner's refusal of it leaves nothing
+applied. So `ptah migrations up`, which runs each statement of a migration on
+its own, still stops after the drop when a row breaks the new rule. In a
+migration you write, add the new `CHECK` or unique index under another name
+before you drop the old one, or fix the rows first.
 
 ## Clauses Ptah does not hand the provider
 
@@ -214,13 +244,6 @@ them is part of stokaro/ptah#4204.
   query text, the plan writes it, and Spanner refuses the statement when it
   runs, after the statements before it. Leave the clause out: Spanner's views
   cannot be written through.
-- **A unique index the rows already break.** An index that becomes `UNIQUE`
-  is replaced by `DROP INDEX` and then `CREATE UNIQUE INDEX`. When two rows
-  hold the same key, Spanner refuses the creation after the drop has run, and
-  the table is left without the index. `SET NOT NULL` over a null and a
-  shorter `character varying` over a longer value are refused the same way,
-  when they run, after the statements before them. Check the rows before you
-  make such a change.
 - **A condition Spanner rewrites.** A view or a `CHECK` whose text the provider
   cannot read in Spanner's spelling is replaced on every plan, and so is any
   rewritten view under a host older than contract 25.37; see
