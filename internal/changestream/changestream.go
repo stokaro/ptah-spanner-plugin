@@ -9,13 +9,15 @@
 // dropped`, and the same for a column. A stream created FOR ALL names
 // nothing, and a stream FOR t names no column of t, so neither stops a drop.
 //
-// The provider does not model change streams: a read leaves them out, so a
-// plan does not know about them and may drop what one names. Without this
-// check such a plan stops at the drop, after the statements before it have
-// run. The executor reads what the streams name from information_schema
-// (Read), finds the drops among the units it is about to run (Drops), and
-// refuses the batch before its first unit when a stream names one of them
-// (Refusal).
+// The provider does not model change streams. A read reports the streams that
+// name each table as the table's removal blockers (Blockers), for a host that
+// carries them (schema.removal-blockers), and the table service refuses a plan
+// that drops what one names. A plan from a host that does not carry them, and
+// a migration someone wrote, may still drop what a stream names, and such a
+// run would stop at the drop after the statements before it. So the executor
+// reads what the streams name from information_schema (Read), finds the drops
+// among the units it is about to run (Drops), and refuses the batch before its
+// first unit when a stream names one of them (Refusal).
 package changestream
 
 import (
@@ -250,6 +252,35 @@ func Read(ctx context.Context, q catalog.Queryer) (Tracking, error) {
 		tracking.Columns = append(tracking.Columns, row)
 	}
 	return tracking, columns.Err()
+}
+
+// Blocker is a change stream that names a table, with the table's columns it
+// names in the column list of its FOR clause, in name order; none for a
+// stream that names the table whole.
+type Blocker struct {
+	Stream  string
+	Columns []string
+}
+
+// Blockers are the change streams that name table schema.table, each once and
+// in name order: what a read reports as the table's removal blockers.
+func (t Tracking) Blockers(schema, table string) []Blocker {
+	var result []Blocker
+	for _, row := range t.Tables {
+		if row.Schema != schema || row.Table != table || slices.ContainsFunc(result, func(seen Blocker) bool { return seen.Stream == row.Stream }) {
+			continue
+		}
+		blocker := Blocker{Stream: row.Stream}
+		for _, column := range t.Columns {
+			if column.Stream == row.Stream && column.Schema == schema && column.Table == table && !slices.Contains(blocker.Columns, column.Column) {
+				blocker.Columns = append(blocker.Columns, column.Column)
+			}
+		}
+		slices.Sort(blocker.Columns)
+		result = append(result, blocker)
+	}
+	slices.SortFunc(result, func(a, b Blocker) int { return strings.Compare(a.Stream, b.Stream) })
+	return result
 }
 
 // maxReason is the longest reason a host shows: one line of at most 512

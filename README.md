@@ -131,6 +131,10 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
     that does either is refused with that reason, as is any other type change
     and a column type Spanner does not have (`smallint`, `timestamp`, `json`,
     `numeric(p,s)` and others), before a statement is sent.
+  - A read reports the change streams that name each table (provider contract
+    25.39), and a plan that drops a table a stream names, or a column one names
+    in its column list, is refused with the stream's name before a statement
+    is sent.
 - **Execution.** Spanner refuses a schema statement inside an explicit
   transaction, so each statement commits as it runs. A statement Spanner refuses
   applied nothing and the statements before it stay applied; the result says how
@@ -139,7 +143,8 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   a schema change its client stopped waiting for. Statements that drop a table,
   or a column, that a change stream names explicitly are refused before the
   first of them runs, with a reason that names the stream, because Spanner
-  refuses the drop only when it reaches it.
+  refuses the drop only when it reaches it: a plan from an older Ptah, or a
+  migration someone wrote, can hold one.
 - **Locks.** `ptah schema apply` and the migration commands take a lock before
   they read the target. Spanner has no session lock, so a lock is a row of the
   table `ptah_locks`, which the provider creates on first use. The row names its

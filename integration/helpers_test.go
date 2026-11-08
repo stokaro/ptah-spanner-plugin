@@ -337,6 +337,28 @@ func hostViewQueries(c *qt.C) string {
 	return "context"
 }
 
+// skipBeforeRemovalBlockers skips the test when the host pins a provider-sdk
+// older than v0.37.0, the first release of contract 25.39, whose
+// schema.removal-blockers carries the change streams a read reports to the
+// table service: such a host plans a drop a stream names, and the executor
+// refuses it when it runs. A host that replaces the module builds it from its
+// own tree and is not older.
+func skipBeforeRemovalBlockers(c *qt.C) {
+	c.Helper()
+	host, _ := hostManifest(c)
+	info, err := buildinfo.ReadFile(host)
+	c.Assert(err, qt.IsNil)
+	for _, dependency := range info.Deps {
+		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+			continue
+		}
+		var major, minor int
+		if _, err := fmt.Sscanf(dependency.Version, "v%d.%d.", &major, &minor); err == nil && major == 0 && minor < 37 {
+			c.Skipf("the host pins provider-sdk %s, which predates contract 25.39", dependency.Version)
+		}
+	}
+}
+
 // queryRows runs a catalog query on the database address names and returns
 // each row as its fields' text joined by spaces.
 func queryRows(c *qt.C, address, query string) []string {

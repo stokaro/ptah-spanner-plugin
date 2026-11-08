@@ -105,23 +105,33 @@ Create a new table with the shape you need and copy the rows. A sequence change
 other than its counter start is refused too.
 
 The drop of a table that a change stream names in its `FOR` clause, and of a
-column that one names in its column list, is refused too, but when the
-statements run rather than when they are planned. Before the first statement of
-a run, the provider reads what the change streams name from
-`information_schema.change_stream_tables` and `change_stream_columns`. When a
-statement of the run drops one of them, nothing of the run is sent, and the
-reason names the table or column and the stream:
+column that one names in its column list, is refused too. Spanner refuses such
+a drop itself (`Table t is tracked by 1 Change Stream: cs1`), but only when it
+runs, after the statements before it. A read reports the change streams that
+name each table, from `information_schema.change_stream_tables` and
+`change_stream_columns`, and on a Ptah of provider contract 25.39 the plan is
+refused before a statement exists. `ptah schema apply`, `--dry-run` and `ptah
+migrations generate` all refuse it:
+
+```text
+dropping table "t": change stream "cs1" names it, and Spanner refuses to drop a table a change stream names; drop the change stream, or alter it to stop tracking the table, before dropping the table
+```
+
+A Ptah of contract 25.38 or older does not carry the streams to the plan, so
+it plans the drop, and the provider refuses it when the statements run. Before
+the first statement of a run, the provider reads the same catalog. When a
+statement of the run drops what a stream names, nothing of the run is sent, and
+the reason names the unit, the table or column and the stream:
 
 ```text
 unit 2 of 2 drops table "t", which change stream "cs1" names, so no unit ran: Spanner refuses to drop a table a change stream names; drop the change stream, or alter it to stop tracking the table, before dropping the table
 ```
 
-Spanner refuses such a drop itself (`Table t is tracked by 1 Change Stream:
-cs1`), but only when it runs, after the statements before it. Drop the stream,
-or alter it with `ALTER CHANGE STREAM`, first. A run that drops or alters a
-change stream before its drops leaves those drops to Spanner, because what the
-streams name has changed by then. A stream created `FOR ALL` names nothing, and
-a stream `FOR t` names no column of `t`, so neither stops a drop. `ptah
+This check also covers a migration someone writes by hand. Drop the stream, or
+alter it with `ALTER CHANGE STREAM`, first. A run that drops or alters a change
+stream before its drops leaves those drops to Spanner, because what the
+streams name has changed by then. A stream created `FOR ALL` names nothing,
+and a stream `FOR t` names no column of `t`, so neither stops a drop. `ptah
 migrations up` runs each statement of a migration on its own, so the statements
 of a migration before the drop have run when the drop is refused.
 
@@ -153,11 +163,11 @@ These cases plan something Spanner refuses, or plan more than the declaration
 asks for, and nothing refuses them before the plan runs. The work that closes
 them is part of stokaro/ptah#4204.
 
-- **Change streams.** A read leaves change streams out, and a plan does not see
-  them. `ptah schema apply --dry-run` and `ptah migrations generate` write the
-  drop of a table or a column a change stream names; the refusal comes when the
-  statements run (see [Changes the provider refuses](#changes-the-provider-refuses)).
-  An export carries no line that marks change streams as not described.
+- **Change streams.** A read does not describe change streams: it reports
+  only which tables and columns they name, for the plan to refuse a drop (see
+  [Changes the provider refuses](#changes-the-provider-refuses)). An export
+  writes no change stream and carries no line that marks change streams as not
+  described.
 - **The seed ledger on an older Ptah.** On a Ptah of provider contract 25.28
   or older, after `ptah seed` has run, `ptah schema apply` plans `DROP TABLE
   "schema_seeds"` when the declaration does not name the table. Review the

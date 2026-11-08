@@ -216,6 +216,11 @@ func providerFeatures() []string {
 		// Migration lint splits a migration as Spanner reads it and checks
 		// the SP rules; see lint.go.
 		provider.LintFeature,
+		// A read reports the change streams that name each table as its
+		// removal blockers, and the table service refuses a plan that drops
+		// a table or a column one names, before a statement exists; see
+		// changestream and tableplan.blockedTable.
+		provider.RemovalBlockersFeature,
 		// The host empties a dev database through the provider and asks it
 		// whether a replayed statement stays inside one; see devclean.go and
 		// replay.go.
@@ -245,8 +250,8 @@ func engineFeatures() []string {
 }
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider, below the one the SDK it is built with speaks (25.33). The
-// additions of contracts 25.28 to 25.33 that it uses are negotiated, and a
+// provider, below the one the SDK it is built with speaks (25.39). The
+// additions of contracts 25.28 to 25.39 that it uses are negotiated, and a
 // host that lists none of them is served as before they existed:
 //
 //   - without observed constraints, a read refuses a table's foreign keys and
@@ -260,7 +265,10 @@ func engineFeatures() []string {
 //   - without index predicates, a read and a declaration of a filtered index
 //     are refused;
 //   - without SQL statement facts, the host refuses a schema document's DROP
-//     VIEW IF EXISTS of a table, which Spanner takes and ignores.
+//     VIEW IF EXISTS of a table, which Spanner takes and ignores;
+//   - without removal blockers (contract 25.39), a read reports no change
+//     stream, so a plan may drop a table or a column one names, and the
+//     executor refuses the drop before the run's first statement.
 //
 // The live tests run against such a host and against one that negotiates
 // them. An older host is refused before a session opens.

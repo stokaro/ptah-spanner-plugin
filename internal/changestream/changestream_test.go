@@ -1,6 +1,7 @@
 package changestream_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -186,6 +187,34 @@ func TestRefusal_FitsAHostReason(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			c := testcheck.New(t)
 			c.Assert(changestream.Refusal([]changestream.Drop{test.drop}, streams, 1), qt.Equals, test.want)
+		})
+	}
+}
+
+// The streams that name a table are its removal blockers, each once and in
+// name order, with the columns each lists for that table; a stream that names
+// the table whole lists none. Another table's rows, and one of the name in
+// another schema, are left out.
+func TestBlockers_NamesTheStreamsOfATable(t *testing.T) {
+	named := changestream.Tracking{
+		Tables: slices.Concat(tracking.Tables, []changestream.Tracked{{Stream: "cs0", Schema: "public", Table: "t"}}),
+		Columns: slices.Concat(tracking.Columns, []changestream.Tracked{{Stream: "cs3", Schema: "public", Table: "other", Column: "a"},
+			{Stream: "cs3", Schema: "public", Table: "t", Column: "a"}}),
+	}
+	tests := []struct {
+		name          string
+		schema, table string
+		want          []changestream.Blocker
+	}{
+		{name: "a table three streams name", schema: "public", table: "t",
+			want: []changestream.Blocker{{Stream: "cs0"}, {Stream: "cs1"}, {Stream: "cs3", Columns: []string{"a", "b"}}}},
+		{name: "a table in another schema", schema: "app", table: "t2", want: []changestream.Blocker{{Stream: "cs4", Columns: []string{"c"}}}},
+		{name: "a table no stream names", schema: "app", table: "t"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			c.Assert(named.Blockers(test.schema, test.table), qt.DeepEquals, test.want)
 		})
 	}
 }
