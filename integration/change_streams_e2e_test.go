@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"path/filepath"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -10,30 +11,41 @@ import (
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
 )
 
-// The provider does not model change streams: a read leaves them out, so a
-// plan may drop a table or a column one names. Spanner refuses such a drop
-// when it runs, after the statements before it. These tests run the host
-// against the emulator and show that the provider refuses the drop before any
-// statement runs, and leaves alone the drops Spanner takes.
+// Spanner refuses to drop a table a change stream names, and a column one names
+// in its column list, when the statement runs, after the statements before it.
+// The provider does not model change streams. A read reports the streams that
+// name each table to a host that carries removal blockers, and the table
+// service refuses such a drop at plan time; on any host the executor refuses
+// it before the run's first statement. These tests run the host against the
+// emulator and show both refusals, and that the provider leaves alone the
+// drops Spanner takes.
+
+// The refusals of a dropped table and a dropped column, as the table service
+// and the executor both end them. The executor names the unit, the table
+// service the drop; both name the stream and say what to do.
+const (
+	tableRefusal  = `Spanner refuses to drop a table a change stream names; drop the change stream, or alter it to stop tracking the table, before dropping the table`
+	columnRefusal = `Spanner refuses to drop a column a change stream names; alter the change stream to stop tracking the column, or drop it, before dropping the column`
+)
 
 // `ptah schema apply` of a declaration that drops a table or a column a
-// change stream names is refused before any statement runs: the table the
-// plan creates first is not created, and t keeps its columns and its row. The
-// reason names the drop and the stream, and says what to do.
+// change stream names is refused before any statement runs, at plan time on a
+// host that carries removal blockers and before the first unit on any other:
+// the table the plan creates first is not created, and t keeps its columns
+// and its row. The reason names the stream, and says what to do.
 func TestHostRefusesDroppingWhatAChangeStreamNamesE2E(t *testing.T) {
 	tests := []struct {
 		name   string
 		stream string
 		schema string
+		named  string
 		want   string
 	}{
 		{name: "a dropped table", stream: `CREATE CHANGE STREAM cs1 FOR t`, schema: "CREATE TABLE other (id bigint PRIMARY KEY);\n",
-			want: `unit 2 of 2 drops table "t", which change stream "cs1" names, so no unit ran: Spanner refuses to drop a table a change stream names; ` +
-				`drop the change stream, or alter it to stop tracking the table, before dropping the table`},
+			named: `change stream "cs1"`, want: tableRefusal},
 		{name: "a dropped column", stream: `CREATE CHANGE STREAM cs3 FOR t(a)`,
 			schema: "CREATE TABLE t (id bigint PRIMARY KEY, b bigint);\nCREATE TABLE other (id bigint PRIMARY KEY);\n",
-			want: `unit 2 of 2 drops column "a" of table "t", which change stream "cs3" names, so no unit ran: Spanner refuses to drop a column a change stream names; ` +
-				`alter the change stream to stop tracking the column, or drop it, before dropping the column`},
+			named:  `change stream "cs3"`, want: columnRefusal},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -42,9 +54,53 @@ func TestHostRefusesDroppingWhatAChangeStreamNamesE2E(t *testing.T) {
 			execSQL(c, address, append(trackedTable, test.stream)...)
 			output, err := applySQL(c, address, test.schema)
 			c.Assert(err, qt.ErrorMatches, "exit status 2", qt.Commentf("%s", output))
+			c.Assert(output, qt.Contains, test.named)
 			c.Assert(output, qt.Contains, test.want)
 			c.Assert(columnsOf(c, address), qt.DeepEquals, []string{"t a", "t b", "t id"})
 			c.Assert(queryRows(c, address, `SELECT a, b FROM t`), qt.DeepEquals, []string{"10 20"})
+		})
+	}
+}
+
+// On a host that carries removal blockers the table service refuses a drop a
+// change stream names at plan time: `schema apply --dry-run` and `migrations
+// generate` refuse it with the drop, the stream and what to do, and generate
+// writes no file. A stream that names a table by a column list blocks the
+// table's removal too.
+func TestHostRefusesPlanningADropAChangeStreamNamesE2E(t *testing.T) {
+	skipBeforeRemovalBlockers(testcheck.New(t))
+	tests := []struct {
+		name   string
+		stream string
+		schema string
+		want   string
+	}{
+		{name: "a dropped table", stream: `CREATE CHANGE STREAM cs1 FOR t`, schema: "CREATE TABLE other (id bigint PRIMARY KEY);\n",
+			want: `dropping table "t": change stream "cs1" names it, and ` + tableRefusal},
+		{name: "a dropped table a stream names by a column", stream: `CREATE CHANGE STREAM cs3 FOR t(a)`, schema: "CREATE TABLE other (id bigint PRIMARY KEY);\n",
+			want: `dropping table "t": change stream "cs3" names it, and ` + tableRefusal},
+		{name: "a dropped column", stream: `CREATE CHANGE STREAM cs3 FOR t(a)`, schema: "CREATE TABLE t (id bigint PRIMARY KEY, b bigint);\n",
+			want: `dropping column "a" of table "t": change stream "cs3" names it, and ` + columnRefusal},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			address := withSearchPath(c, freshDatabase(c))
+			execSQL(c, address, append(trackedTable, test.stream)...)
+			output, err := planSQL(c, address, test.schema)
+			c.Assert(err, qt.ErrorMatches, "exit status 2", qt.Commentf("%s", output))
+			c.Assert(output, qt.Contains, test.want)
+
+			dir := writeFiles(c, map[string]string{"schema.sql": test.schema})
+			migrations := filepath.Join(dir, "migrations")
+			output, err = hostCommand(c, "migrations", "generate", "--db-url", address, "--schema-file", filepath.Join(dir, "schema.sql"),
+				"--migrations-dir", migrations, "--name", "drop")
+			c.Assert(err, qt.ErrorMatches, "exit status 2", qt.Commentf("%s", output))
+			c.Assert(output, qt.Contains, test.want)
+			written, err := filepath.Glob(filepath.Join(migrations, "*.sql"))
+			c.Assert(err, qt.IsNil)
+			c.Assert(written, qt.HasLen, 0)
+			c.Assert(columnsOf(c, address), qt.DeepEquals, []string{"t a", "t b", "t id"})
 		})
 	}
 }

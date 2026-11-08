@@ -17,8 +17,9 @@
 //
 // A change Spanner cannot make is refused here, before a statement is sent:
 // a change of a primary key, a type change other than between character
-// varying and bytea or on a key column, and a column type Spanner does not
-// have. The refusal names the table and why.
+// varying and bytea or on a key column, a column type Spanner does not have,
+// and the drop of a table or a column a change stream names. The refusal
+// names the table and why.
 package tableplan
 
 import (
@@ -319,6 +320,9 @@ func (p *planner) drop(index int, table *protocol.PlanningTable) error {
 	if current == nil {
 		return fmt.Errorf("a dropped table needs its observation")
 	}
+	if err := blockedTable(index, table); err != nil {
+		return err
+	}
 	common := p.commonStep(table.GetSubject(), protocol.PlanningEffect_DROP, "table")
 	if common == nil {
 		return fmt.Errorf("the host planned no removal of table %s", phrase(table.GetSubject()))
@@ -454,6 +458,9 @@ func (p *planner) claimAlteration(index int, table *protocol.PlanningTable, comm
 		target := change.GetSubject()
 		switch {
 		case target.GetKind() == "column" && change.GetAction() == protocol.PlanningEffect_DROP:
+			if err := blockedColumn(index, table, target.GetName().GetSource()); err != nil {
+				return nil, "", err
+			}
 			if err := p.heldPolicyColumn(index, table, target.GetName().GetSource()); err != nil {
 				return nil, "", err
 			}

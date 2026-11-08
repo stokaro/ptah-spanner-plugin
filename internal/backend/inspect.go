@@ -13,6 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/catalog"
+	"github.com/stokaro/ptah-spanner-plugin/internal/changestream"
 	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-spanner-plugin/internal/history"
 	"github.com/stokaro/ptah-spanner-plugin/internal/indexfilter"
@@ -25,8 +26,9 @@ import (
 
 // Inspect reads the base tables of the requested schemas, or of the default
 // schema when the request names none, with their columns, primary keys,
-// secondary indexes and row deletion policies, foreign keys and CHECKs where
-// the host negotiated them, and the views and sequences of those schemas. The
+// secondary indexes and row deletion policies, foreign keys and CHECKs and the
+// change streams that name each table where the host negotiated them, and the
+// views and sequences of those schemas. The
 // snapshot is complete or the call fails: an object the provider does not
 // describe yet, or a constraint a host that did not negotiate them would
 // miss, fails the read with a reason.
@@ -58,6 +60,10 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		Coverage:       &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
 	}
 	snapshot.Coverage.Kinds = []*protocol.ModelKindCoverage{policyCoverage(current.database, request.GetSchemas())}
+	tracking, err := streamTracking(ctx, current, snapshot.GetTargetFeatures())
+	if err != nil {
+		return nil, err
+	}
 	constraints := slices.Contains(snapshot.GetTargetFeatures(), provider.ObservedConstraintsFeature)
 	seeds := slices.Contains(snapshot.GetTargetFeatures(), provider.ReservedSeedsFeature)
 	predicates := slices.Contains(snapshot.GetTargetFeatures(), provider.IndexPredicatesFeature)
@@ -80,6 +86,9 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 			continue
 		}
 		observed := observedTable(current.database, table)
+		for _, blocker := range tracking.Blockers(table.Schema, table.Name) {
+			observed.RemovalBlockers = append(observed.RemovalBlockers, &protocol.RemovalBlocker{Kind: changeStreamKind, Name: blocker.Stream, Columns: blocker.Columns})
+		}
 		if table.RowDeletion != nil {
 			facet, err := rowdeletion.Facet("policy."+table.Schema+"."+table.Name, protocol.ValueInput_OBSERVED, proto.CloneOf(observed.GetIdentity()), *table.RowDeletion)
 			if err != nil {
@@ -107,6 +116,26 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		})
 	}
 	return snapshot, nil
+}
+
+// changeStreamKind is the kind of the removal blockers a read reports.
+const changeStreamKind = "change_stream"
+
+// streamTracking reads what the database's change streams name, for a host
+// that carries removal blockers: Spanner refuses to drop a table a stream
+// names, and a column one names in its column list, so the read reports them
+// with each table and the table service refuses such a drop at plan time. A
+// host that does not carry them reads none, and the executor refuses the drop
+// instead; see changestream.
+func streamTracking(ctx context.Context, current *session, features []string) (changestream.Tracking, error) {
+	if !slices.Contains(features, provider.RemovalBlockersFeature) {
+		return changestream.Tracking{}, nil
+	}
+	tracking, err := changestream.Read(ctx, current.conn)
+	if err != nil {
+		return changestream.Tracking{}, callFailed(ctx, "the provider could not read which tables and columns change streams name")
+	}
+	return tracking, nil
 }
 
 // observedTable is a read table as the protocol carries it: each column as
