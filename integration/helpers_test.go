@@ -300,6 +300,43 @@ func hostPredatesStatementFacts(c *qt.C) bool {
 	return false
 }
 
+// viewQueryContextCommit is the commit time, as a pseudo-version writes it, of
+// stokaro/ptah a09ccee4d, which added contract 25.37 to provider-sdk. A
+// provider-sdk pseudo-version on v0.34.1 at or after it speaks 25.37, as does
+// every release after provider-sdk/v0.34.0.
+const viewQueryContextCommit = "20261107221847"
+
+// hostViewQueries is how the host compares a view's query on this engine:
+// "text" for a host older than contract 25.33, which compares the texts by
+// its own reading; "provider" for a host of 25.33 to 25.36, which asks the
+// provider (schema.view-query-equivalence) without the declared columns; and
+// "context" for a host of 25.37 or later, which sends the columns and reads a
+// pair the provider leaves undecided by its own reading
+// (schema.view-query-context).
+func hostViewQueries(c *qt.C) string {
+	c.Helper()
+	if hostPredatesStatementFacts(c) {
+		return "text"
+	}
+	host, _ := hostManifest(c)
+	info, err := buildinfo.ReadFile(host)
+	c.Assert(err, qt.IsNil)
+	for _, dependency := range info.Deps {
+		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+			continue
+		}
+		var major, minor, patch int
+		if _, err := fmt.Sscanf(dependency.Version, "v%d.%d.%d", &major, &minor, &patch); err != nil || major != 0 {
+			return "context"
+		}
+		_, pseudo, _ := strings.Cut(dependency.Version, "-0.")
+		if minor < 34 || minor == 34 && (patch == 0 || pseudo < viewQueryContextCommit) {
+			return "provider"
+		}
+	}
+	return "context"
+}
+
 // queryRows runs a catalog query on the database address names and returns
 // each row as its fields' text joined by spaces.
 func queryRows(c *qt.C, address, query string) []string {

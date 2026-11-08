@@ -156,7 +156,7 @@ func TestHostRemovesATableWithItsIndexAndViewE2E(t *testing.T) {
 
 // viewShapes are views of a table t and a table u, each with its query as a
 // schema document declares it.
-const viewShapes = `CREATE TABLE t (id bigint PRIMARY KEY, name varchar(20), flag boolean);
+const viewShapes = `CREATE TABLE t (id bigint PRIMARY KEY, name varchar(20), flag boolean, price double precision);
 CREATE TABLE u (id bigint PRIMARY KEY, t_id bigint, label text);
 CREATE VIEW v_plain AS SELECT id, name FROM t;
 CREATE VIEW v_spelled AS select "id", name from t;
@@ -173,25 +173,32 @@ CREATE VIEW v_join AS SELECT t.id, u.label FROM t JOIN u ON u.t_id = t.id;
 CREATE VIEW v_case AS SELECT id, CASE WHEN id > 5 THEN 'big' ELSE 'small' END AS size FROM t;
 CREATE VIEW v_limit AS SELECT id FROM t ORDER BY id LIMIT 10;
 CREATE VIEW v_alias AS SELECT x.id FROM t AS x;
+CREATE VIEW v_price AS SELECT id FROM t WHERE price > 1.5;
 `
 
 // replacedView finds the view a plan replaces.
 var replacedView = regexp.MustCompile(`(?m)^CREATE OR REPLACE VIEW "([a-z_]+)" AS$`)
 
-// Spanner stores its own rendering of a view's query. The host compares a
-// declared query with it by text: it folds case, quotes and spacing, strips
-// the qualifiers Spanner adds to a UNION's columns and expands a SELECT *
-// with the declared columns, so those views converge. A query whose
-// conditions, literals, joins or aliases Spanner rewrites does not:
-// `WHERE id > 0` is stored as `WHERE (id > '0'::bigint)`, and such a view is
-// replaced on every plan, as Ptah's built-in Spanner engine replaced it.
+// Spanner stores its own rendering of a view's query: `WHERE id > 0` is
+// stored as `WHERE (id > '0'::bigint)`, a join in parentheses, a LIMIT cast
+// to bigint, an alias without AS and its columns unqualified, every column of
+// a SELECT * named and the columns of a UNION qualified.
 //
-// schema.view-query-equivalence (contract 25.33) would let the provider decide
-// these pairs, but the host then compares no view query of the engine by its
-// text, and a CompareViewQueries request carries neither the columns a
-// SELECT * stands for nor a way to hand a pair back to the host's fold.
-// Listing the feature with an answer by the provider's own spelling replans
-// v_star and v_union, which converge here, so the provider does not list it.
+// A host older than contract 25.33 compares the texts by its own reading: it
+// folds case, quotes and spacing, strips the qualifiers of a UNION's columns
+// and expands a SELECT * with the declared columns, so those views converge,
+// and any view whose query Spanner rewrites further is replaced on every plan,
+// as Ptah's built-in Spanner engine replaced it.
+//
+// A host of 25.37 asks the provider with the columns of every declared table
+// (schema.view-query-context). The provider reads both queries into one form
+// (commonobject.SameViewQuery) and leaves a pair it cannot read, here the
+// CASE, to the host's reading, so only that view is replaced; the columns'
+// types are what read `price > 1.5` as Spanner's
+// `price > (1.5)::double precision`. A host of 25.33 to 25.36 asks without
+// the columns and takes no undecided answer: the provider reads the queries
+// without column types, and the comparison of a double precision column and
+// the SELECT * it cannot expand are replaced as well.
 func TestHostReplacesTheViewsSpannerRewritesE2E(t *testing.T) {
 	c := testcheck.New(t)
 	address := withSearchPath(c, freshDatabase(c))
@@ -201,7 +208,7 @@ func TestHostReplacesTheViewsSpannerRewritesE2E(t *testing.T) {
 		qt.DeepEquals, []string{
 			"SELECT t.id, u.label FROM (t JOIN u ON ((u.t_id = t.id)))",
 			"SELECT id FROM t WHERE (id > '0'::bigint)",
-			"SELECT id, name, flag FROM t",
+			"SELECT id, name, flag, price FROM t",
 		})
 	output, err = planSQL(c, address, viewShapes)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
@@ -209,5 +216,10 @@ func TestHostReplacesTheViewsSpannerRewritesE2E(t *testing.T) {
 	for _, match := range replacedView.FindAllStringSubmatch(output, -1) {
 		replaced = append(replaced, match[1])
 	}
-	c.Assert(replaced, qt.DeepEquals, []string{"v_alias", "v_case", "v_in", "v_join", "v_limit", "v_literal"}, qt.Commentf("%s", output))
+	want := map[string][]string{
+		"text":     {"v_alias", "v_case", "v_in", "v_join", "v_limit", "v_literal", "v_price"},
+		"provider": {"v_case", "v_price", "v_star"},
+		"context":  {"v_case"},
+	}[hostViewQueries(c)]
+	c.Assert(replaced, qt.DeepEquals, want, qt.Commentf("%s", output))
 }

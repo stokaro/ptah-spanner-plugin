@@ -54,6 +54,15 @@ func Equivalent(declared, held string, columns map[string]string) bool {
 	return ok && left == right
 }
 
+// Canonical writes expression as its normalized tree prints it, the form in
+// which the expression a declaration states and the one Spanner keeps read
+// the same, and false when it cannot read the expression. columns maps each
+// column the expression names to its type, as Equivalent takes them. Two
+// expressions with one canonical form are one expression on Spanner.
+func Canonical(expression string, columns map[string]string) (string, bool) {
+	return canonical(expression, columns)
+}
+
 // canonical reads an expression and prints its normalized tree.
 func canonical(expression string, columns map[string]string) (string, bool) {
 	tree, err := parse(expression)

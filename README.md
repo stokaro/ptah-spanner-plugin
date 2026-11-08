@@ -51,10 +51,13 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
 - **Views and sequences.** A read reports each view with its query as Spanner
   stores it, and each sequence with its counter start. A view is created with
   `CREATE VIEW`, replaced with `CREATE OR REPLACE VIEW` and dropped with `DROP
-  VIEW`; a declared query converges whatever its case, spacing and quoting,
-  but a condition Spanner rewrites (`WHERE id > 0` reads back as `WHERE (id >
-  '0'::bigint)`) is replaced on every plan until it is declared in the stored
-  spelling. A sequence takes `START COUNTER WITH` alone: a changed start is
+  VIEW`. A declared query converges whatever its case, spacing and quoting,
+  and, with a host of contract 25.37, also where Spanner casts its literals,
+  adds parentheses, rewrites `IN` and `BETWEEN`, drops an alias's `AS`, names
+  a `SELECT *`'s columns or qualifies them (`WHERE id > 0` reads back as
+  `WHERE (id > '0'::bigint)`); a query the provider cannot read, such as one
+  with a CASE or a subquery, is replaced on every plan until it is declared in
+  the stored spelling. A sequence takes `START COUNTER WITH` alone: a changed start is
   `ALTER SEQUENCE ... RESTART COUNTER WITH`, and any other option is refused.
   A default `nextval('s')` converges with the `nextval('s'::text)` Spanner
   stores. A sequence that skips a range is refused by the read.
