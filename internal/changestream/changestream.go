@@ -85,11 +85,8 @@ func changesStreams(words []string) bool {
 	if len(words) >= 3 && slices.Contains([]string{"CREATE", "ALTER", "DROP"}, words[0]) && words[1] == "CHANGE" && words[2] == "STREAM" {
 		return true
 	}
-	if !leads(words, "ALTER", "TABLE") {
-		return false
-	}
-	name, found := alteredTable(words, words)
-	return found && name.next < len(words) && words[name.next] == "RENAME"
+	_, next, found := sqltext.AlteredTable(words, words)
+	return found && next < len(words) && words[next] == "RENAME"
 }
 
 // readDrop reads a DROP TABLE or an ALTER TABLE ... DROP COLUMN. source are
@@ -97,9 +94,9 @@ func changesStreams(words []string) bool {
 // provider matches them.
 func readDrop(source, words []string) (Drop, bool) {
 	switch {
-	case leads(words, "DROP", "TABLE"):
+	case sqltext.Leads(words, "DROP", "TABLE"):
 		return droppedTable(source, words)
-	case leads(words, "ALTER", "TABLE"):
+	case sqltext.Leads(words, "ALTER", "TABLE"):
 		return droppedColumn(source, words)
 	}
 	return Drop{}, false
@@ -108,21 +105,21 @@ func readDrop(source, words []string) (Drop, bool) {
 // droppedTable reads `DROP TABLE [IF EXISTS] t [RESTRICT]`.
 func droppedTable(source, words []string) (Drop, bool) {
 	at := 2
-	if leads(words[at:], "IF", "EXISTS") {
+	if sqltext.Leads(words[at:], "IF", "EXISTS") {
 		at += 2
 	}
-	name, found := tableName(source, at)
-	if !found || !ends(words, name.next) {
+	name, next, found := sqltext.ReadTableName(source, at)
+	if !found || !ends(words, next) {
 		return Drop{}, false
 	}
-	return Drop{Schema: name.schema, Table: name.table}, true
+	schema, table := resolved(name)
+	return Drop{Schema: schema, Table: table}, true
 }
 
 // droppedColumn reads `ALTER TABLE [IF EXISTS] t DROP [COLUMN] c
 // [RESTRICT]`. DROP CONSTRAINT and DROP TTL drop no column.
 func droppedColumn(source, words []string) (Drop, bool) {
-	name, found := alteredTable(source, words)
-	next := name.next
+	name, next, found := sqltext.AlteredTable(source, words)
 	if !found || next+1 >= len(words) || words[next] != "DROP" || slices.Contains([]string{"CONSTRAINT", "TTL"}, words[next+1]) {
 		return Drop{}, false
 	}
@@ -133,16 +130,12 @@ func droppedColumn(source, words []string) (Drop, bool) {
 	if next >= len(words) || !ends(words, next+1) {
 		return Drop{}, false
 	}
-	column, found := identifier(source[next])
+	column, found := sqltext.Identifier(source[next])
 	if !found {
 		return Drop{}, false
 	}
-	return Drop{Schema: name.schema, Table: name.table, Column: column}, true
-}
-
-// leads reports whether words start with leading.
-func leads(words []string, leading ...string) bool {
-	return len(words) >= len(leading) && slices.Equal(words[:len(leading)], leading)
+	schema, table := resolved(name)
+	return Drop{Schema: schema, Table: table, Column: column}, true
 }
 
 // ends reports whether the statement ends at words[at], or holds only
@@ -151,51 +144,13 @@ func ends(words []string, at int) bool {
 	return at == len(words) || at == len(words)-1 && words[at] == "RESTRICT"
 }
 
-// tableRef is the table name a statement spells, and the index of the token
-// after it.
-type tableRef struct {
-	schema, table string
-	next          int
-}
-
-// alteredTable reads the table an ALTER TABLE names, after an optional IF
-// EXISTS. source are the statement's tokens as written and words the same
-// tokens as the provider matches them.
-func alteredTable(source, words []string) (tableRef, bool) {
-	at := 2
-	if leads(words[at:], "IF", "EXISTS") {
-		at += 2
+// resolved names the table a statement names by its schema and name, a name
+// without a schema being in the default one.
+func resolved(name sqltext.TableName) (schema, table string) {
+	if name.Schema == "" {
+		return ddl.DefaultSchema, name.Table
 	}
-	return tableName(source, at)
-}
-
-// tableName reads the table name that starts at source[at]: a name, or a
-// schema and a name joined by a dot. A name without a schema is in the
-// default schema.
-func tableName(source []string, at int) (tableRef, bool) {
-	if at >= len(source) {
-		return tableRef{}, false
-	}
-	first, found := identifier(source[at])
-	if !found {
-		return tableRef{}, false
-	}
-	if at+2 < len(source) && source[at+1] == "." {
-		second, found := identifier(source[at+2])
-		return tableRef{schema: first, table: second, next: at + 3}, found
-	}
-	return tableRef{schema: ddl.DefaultSchema, table: first, next: at + 1}, true
-}
-
-// identifier returns the name a token spells: a quoted name with its quoting
-// undone, or an unquoted word in lower case, as Spanner's PostgreSQL
-// interface folds one. A number, a string or punctuation spells no name.
-func identifier(token string) (string, bool) {
-	tokens, err := sqltext.Tokens(token)
-	if err != nil || len(tokens) != 1 || !tokens[0].Valued || !tokens[0].Name && tokens[0].Kind != sqltext.Word {
-		return "", false
-	}
-	return tokens[0].Value, true
+	return name.Schema, name.Table
 }
 
 // Tracking is what the change streams of a database name.

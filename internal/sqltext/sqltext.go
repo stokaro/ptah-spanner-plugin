@@ -166,7 +166,7 @@ func classify(text string, start, end int, source []Token) (Statement, error) {
 	written := make([]string, len(source))
 	words := make([]string, len(source))
 	for i, token := range source {
-		written[i], words[i] = token.Text, upper(token)
+		written[i], words[i] = token.Text, token.Upper()
 	}
 	kind, err := kindOf(words)
 	if err != nil {

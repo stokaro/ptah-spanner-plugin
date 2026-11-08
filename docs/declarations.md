@@ -342,6 +342,9 @@ ALTER TABLE "posts" DROP CONSTRAINT "posts_kind_check";
 ALTER TABLE "posts" ADD CONSTRAINT "posts_kind_check" CHECK (kind IN ('draft', 'live'));
 ```
 
+When a row holds a value the new list leaves out, the run is refused before
+its first statement, and the column keeps its `CHECK`; see
+[Changes the provider refuses](limitations.md#changes-the-provider-refuses).
 A Ptah that does not ask the provider about the `CHECK` it builds for an enum
 column plans nothing for a changed list.
 

@@ -123,11 +123,11 @@ func lexError(text string, err error) error {
 	return &LexError{Offset: syntax.Offset, Reason: fmt.Sprintf("%s on line %d", syntax.Reason, line)}
 }
 
-// upper is a token as the provider matches it: an unquoted word in upper case,
-// any other token as written.
-func upper(token Token) string {
-	if token.Kind == Word && token.Valued {
-		return strings.ToUpper(token.Text)
+// Upper returns the token as the provider matches it: an unquoted word in
+// upper case, and any other token as written.
+func (t Token) Upper() string {
+	if t.Kind == Word && t.Valued {
+		return strings.ToUpper(t.Text)
 	}
-	return token.Text
+	return t.Text
 }

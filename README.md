@@ -144,7 +144,11 @@ the provider refuses. Ptah publishes those pages on docs.ptah.run under
   or a column, that a change stream names explicitly are refused before the
   first of them runs, with a reason that names the stream, because Spanner
   refuses the drop only when it reaches it: a plan from an older Ptah, or a
-  migration someone wrote, can hold one.
+  migration someone wrote, can hold one. For the same reason, a `CHECK` or a
+  foreign key that rows of the table already break is refused before the first
+  statement runs: the provider counts the rows that break each constraint a
+  run adds after its first statement, so a plan that replaces such a
+  constraint applies nothing.
 - **Locks.** `ptah schema apply` and the migration commands take a lock before
   they read the target. Spanner has no session lock, so a lock is a row of the
   table `ptah_locks`, which the provider creates on first use. The row names its
