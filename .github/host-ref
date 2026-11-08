@@ -1,0 +1,2 @@
+# Live legs run against this host branch until stokaro/ptah#5791 merges.
+fix/4204-s81-enum-check-change
