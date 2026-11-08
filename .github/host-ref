@@ -1,4 +1,0 @@
-# Draft only: TestHostReplacesTheViewsSpannerRewritesE2E pins the context
-# answer of a host that adopts contract 25.37, which this branch of the host
-# carries. Remove this file before marking the PR ready.
-feat/4204-contract-2537-adoption
