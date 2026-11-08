@@ -20,6 +20,34 @@ provider, what a schema can declare for Spanner, how migrations run and what
 the provider refuses. Ptah publishes those pages on docs.ptah.run under
 `extend/providers/spanner/`.
 
+## Install
+
+Install the provider with Ptah's own command:
+
+```sh
+ptah providers install spanner
+```
+
+The command installs the newest release whose minimum provider contract the
+running Ptah meets. It checks the archive against the release's
+`checksums.txt` and stores the executable in Ptah's user cache directory. It
+does not run the executable and does not edit a manifest. To install a chosen
+release, add `--version`, for example `--version 0.4.0`.
+
+After the install, a command that names a `spanner://`, `cloudspanner://` or
+`google-spanner://` URL or the `spanner` dialect uses the provider without a
+flag or a manifest. The URL points at PGAdapter, which you run yourself. Check
+the installed copy:
+
+```sh
+ptah providers check --provider-engine spanner --json
+```
+
+The check reports `"status": "compatible"` when Ptah can run the provider, and
+`provider_missing` when no copy is installed.
+[Install an official provider](https://docs.ptah.run/edge/extend/executable-providers/#install-an-official-provider)
+says how a release is chosen, what is checked and where the file is stored.
+
 ## What the provider does
 
 - **Sessions.** An address is `spanner://host:port/database`, with optional
@@ -275,9 +303,10 @@ schema whose foreign key is a table constraint needs a Ptah that predicts the
 key for the rollback plan; Ptah refuses to plan that down file until then. The
 plan and the measurements behind it are kept with #4204.
 
-## Use it
+## Use a build of your own
 
-Build the provider and describe it in a provider manifest:
+To run a provider you built instead of an installed release, build it and
+describe it in a provider manifest:
 
 ```sh
 GOWORK=off CGO_ENABLED=0 go build -o bin/ptah-plugin-spanner ./cmd/ptah-plugin-spanner
@@ -296,7 +325,7 @@ shasum -a 256 bin/ptah-plugin-spanner
 }
 ```
 
-Then select it explicitly:
+Then select it explicitly; a manifest entry overrides the installed copy:
 
 ```sh
 ptah providers check --provider-config providers.json --provider-engine spanner --json
