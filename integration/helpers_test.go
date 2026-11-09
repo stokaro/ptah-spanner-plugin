@@ -19,9 +19,9 @@ import (
 
 	qt "github.com/frankban/quicktest"
 	"github.com/jackc/pgx/v5"
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
-	"github.com/stokaro/ptah/provider-sdk/provider"
-	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
+	"ptah.run/provider-sdk/provider"
+	providerruntime "ptah.run/provider-sdk/runtime"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/backend"
 )
@@ -261,7 +261,7 @@ func skipBeforeConstraints(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int
@@ -287,7 +287,7 @@ func hostPredatesStatementFacts(c *qt.C) bool {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
 			continue
 		}
 		var major, minor, patch int
@@ -322,7 +322,7 @@ func hostViewQueries(c *qt.C) string {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
 			continue
 		}
 		var major, minor, patch int
@@ -349,7 +349,7 @@ func skipBeforeRemovalBlockers(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int
@@ -371,7 +371,7 @@ func skipBeforeNotDescribed(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int

@@ -7,11 +7,11 @@ toolchain go1.27.3
 require (
 	github.com/frankban/quicktest v1.14.6
 	github.com/jackc/pgx/v5 v5.12.0
-	github.com/stokaro/ptah/provider-sdk v0.39.0
-	github.com/stokaro/ptah/sqlsyntax v0.1.0
 	google.golang.org/grpc v1.86.0-dev
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
+	ptah.run/provider-sdk v0.40.0
+	ptah.run/sqlsyntax v0.2.0
 )
 
 require (

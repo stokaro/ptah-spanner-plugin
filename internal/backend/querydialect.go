@@ -1,6 +1,6 @@
 package backend
 
-import protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+import protocol "ptah.run/provider-sdk/protocol/experimental"
 
 // queryDialect is the spelling the host's query builder reads for Spanner, the
 // values of the host's built-in Spanner descriptor: parameters are $1, $2 and

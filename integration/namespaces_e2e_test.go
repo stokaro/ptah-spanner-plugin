@@ -36,7 +36,7 @@ func skipBeforeContract2529(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "github.com/stokaro/ptah/provider-sdk" || dependency.Replace != nil {
+		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int

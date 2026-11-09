@@ -2,7 +2,7 @@
 // statements and tokens, and says what each statement does to the schema.
 //
 // The lexing is PostgreSQL's, as Spanner's PostgreSQL interface reads text,
-// and comes from github.com/stokaro/ptah/sqlsyntax/pgsyntax, the module the
+// and comes from ptah.run/sqlsyntax/pgsyntax, the module the
 // host reads the PostgreSQL family with: quoted names, string constants in
 // every form, dollar-quoted strings, nested block comments, and a semicolon
 // that ends a statement outside all of them.

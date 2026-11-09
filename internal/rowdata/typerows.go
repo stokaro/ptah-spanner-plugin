@@ -3,7 +3,7 @@ package rowdata
 import (
 	"fmt"
 
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
 )
 
 // TypeRows answers, for a Spanner table, the type of each column of the

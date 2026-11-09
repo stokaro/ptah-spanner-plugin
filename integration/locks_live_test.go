@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	qt "github.com/frankban/quicktest"
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
-	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
+	providerruntime "ptah.run/provider-sdk/runtime"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"
 )

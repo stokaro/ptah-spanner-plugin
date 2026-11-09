@@ -1,6 +1,6 @@
 package backend
 
-import protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+import protocol "ptah.run/provider-sdk/protocol/experimental"
 
 // EmulatorImage is the server the provider's live tests run against: the Cloud
 // Spanner emulator behind PGAdapter. It is the only Spanner endpoint a
