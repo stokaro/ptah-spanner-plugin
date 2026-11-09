@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	qt "github.com/frankban/quicktest"
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"google.golang.org/protobuf/testing/protocmp"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/migrationlint"
 	"github.com/stokaro/ptah-spanner-plugin/internal/testcheck"

@@ -23,8 +23,8 @@ import (
 	"sync"
 
 	"github.com/jackc/pgx/v5"
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
-	"github.com/stokaro/ptah/provider-sdk/provider"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
+	"ptah.run/provider-sdk/provider"
 
 	"github.com/stokaro/ptah-spanner-plugin/internal/buildversion"
 	"github.com/stokaro/ptah-spanner-plugin/internal/commonobject"

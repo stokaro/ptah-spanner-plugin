@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
 )
 
 // The bounds of a numeric value on Spanner's PostgreSQL interface: 131072

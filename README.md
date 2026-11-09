@@ -335,8 +335,8 @@ ptah schema apply --db-url 'spanner://localhost:5432/app?sslmode=disable' \
 
 ## Build and test
 
-The module pins the published SDK, `github.com/stokaro/ptah/provider-sdk`, by
-tag: v0.31.0, which speaks provider contract 25.33. It needs neither the Ptah
+The module pins the published SDK, `ptah.run/provider-sdk`, by tag: v0.40.0,
+which speaks provider contract 25.41. It needs neither the Ptah
 source nor a local SDK checkout and has no `replace` directive. The provider
 starts on a Ptah of contract 25.27 or a later minor of 25, and serves an older
 minor without the additions it does not list;

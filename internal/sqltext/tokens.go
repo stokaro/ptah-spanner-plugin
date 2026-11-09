@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/stokaro/ptah/sqlsyntax/pgsyntax"
+	"ptah.run/sqlsyntax/pgsyntax"
 )
 
 // TokenKind is what a token of a text is.
@@ -52,7 +52,7 @@ var options = pgsyntax.Options{}
 
 // Tokens returns every token of a text in order, white space and comments
 // included, so the tokens cover the text with no gap. The lexing is
-// PostgreSQL's (github.com/stokaro/ptah/sqlsyntax/pgsyntax). A string, a
+// PostgreSQL's (ptah.run/sqlsyntax/pgsyntax). A string, a
 // quoted name, a dollar-quoted string or a block comment that does not close
 // fails the whole text with a [*LexError], naming the line it opens on.
 func Tokens(text string) ([]Token, error) {
