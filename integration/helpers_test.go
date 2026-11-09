@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -249,6 +250,12 @@ func skipOnOldHost(c *qt.C, output string, err error, refusal, change string) {
 	}
 }
 
+// providerSDKModules are the module paths a host binary links the provider SDK
+// under: ptah.run/provider-sdk, or, for Ptah releases up to v0.25.0, the GitHub
+// path that SDK releases up to v0.39.0 declare. The SDK kept one version
+// sequence across both, so a version read under either compares with the other.
+var providerSDKModules = []string{"ptah.run/provider-sdk", "github.com/stokaro/ptah/provider-sdk"}
+
 // skipBeforeConstraints skips the test when the host speaks a contract older
 // than 25.28, which carries a table's foreign keys and CHECKs, their changes,
 // CHECK equivalence and index NULLS orders: the host pins a provider-sdk
@@ -261,7 +268,7 @@ func skipBeforeConstraints(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int
@@ -287,7 +294,7 @@ func hostPredatesStatementFacts(c *qt.C) bool {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor, patch int
@@ -322,7 +329,7 @@ func hostViewQueries(c *qt.C) string {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor, patch int
@@ -349,7 +356,7 @@ func skipBeforeRemovalBlockers(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int
@@ -371,7 +378,7 @@ func skipBeforeNotDescribed(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int

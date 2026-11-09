@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -36,7 +37,7 @@ func skipBeforeContract2529(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int

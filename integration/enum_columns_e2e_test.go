@@ -6,6 +6,7 @@ import (
 	"debug/buildinfo"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -27,7 +28,7 @@ func skipBeforeEnumColumns(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor int
@@ -135,7 +136,7 @@ func skipBeforeEnumCheckDecisions(c *qt.C) {
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
 	for _, dependency := range info.Deps {
-		if dependency.Path != "ptah.run/provider-sdk" || dependency.Replace != nil {
+		if !slices.Contains(providerSDKModules, dependency.Path) || dependency.Replace != nil {
 			continue
 		}
 		var major, minor, patch int
