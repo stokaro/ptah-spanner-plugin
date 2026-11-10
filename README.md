@@ -20,6 +20,10 @@ provider, what a schema can declare for Spanner, how migrations run and what
 the provider refuses. Ptah publishes those pages on docs.ptah.run under
 `extend/providers/spanner/`.
 
+## Server vulnerability scans
+
+Cloud Spanner is a managed service. Its server patch level is outside the database operator's control, and the PGAdapter endpoint does not identify the service's internal patch state. The provider advertises `security.vulnerability-scan-not-applicable` for the engine, so `ptah db vulnerabilities` reports `not_applicable` instead of matching PostgreSQL server advisories to Spanner.
+
 ## Install
 
 Install the provider with Ptah's own command:
