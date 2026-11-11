@@ -98,6 +98,8 @@ func New() *Provider { return &Provider{} }
 // providerFeatures are the services and behaviors the provider offers.
 func providerFeatures() []string {
 	return []string{
+		// Spanner server patching belongs to the managed service.
+		"security.vulnerability-scan-not-applicable",
 		provider.InspectFeature,
 		provider.RenderFeature,
 		// A render names what Spanner leaves out of a declared column type
