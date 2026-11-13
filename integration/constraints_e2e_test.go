@@ -68,31 +68,24 @@ const checkedTables = "package entities\n\n//ptah:schema:table name=\"authors\"\
 	"\t//ptah:schema:field name=\"kind\" type=\"ENUM\" enum=\"a,b,c\" not_null=\"true\" default=\"a\"\n\tKind string\n" +
 	"\t//ptah:schema:field name=\"price\" type=\"FLOAT8\" check=\"price > 0\"\n\tPrice float64\n}\n"
 
-// enumRefusal is the words of a host that turns an inline enum column of an
-// engine a provider serves into a standalone enum type and refuses it: the
-// host lowered it to text with a CHECK through the built-in Spanner
-// descriptor, which the deletion of the built-in engine removed.
-const enumRefusal = "does not support SchemaDiff.EnumsAdded"
-
-// enumChange names the host change that lets an engine a provider serves say
-// how it builds an enum column (stokaro/ptah#4204 S84).
-const enumChange = "stokaro/ptah#5658"
-
 // A column's CHECK is written in its definition under the name the built-in
 // gave it, `<table>_<column>_check`, and an enum column is text with its
 // values in a CHECK, listed once. A host of contract 25.28 asks the provider
 // whether each CHECK Spanner keeps is the declared one, so a second run plans
 // nothing; the built-in dropped and added `score >= 0` and `price > 0` on
-// every run (stokaro/ptah#4204 S1). A host that turns the enum column into an
-// enum type refuses the declaration until stokaro/ptah#5658 lands, and the
-// test skips there.
+// every run (stokaro/ptah#4204 S1). A host older than contract 25.31 cannot
+// take the enum column's form from the provider, and one without a built-in
+// Spanner engine refuses the declaration with `SchemaDiff.EnumsAdded`
+// (stokaro/ptah#5658), so the test skips on every such host. The skip reads
+// the host binary rather than that answer: a provider that stops stating the
+// form gets the same answer from a host of 25.31 and fails the test.
 func TestHostCreatesChecksE2E(t *testing.T) {
 	c := testcheck.New(t)
+	skipBeforeEnumColumns(c)
 	entities := withSearchPath(c, freshDatabase(c))
 	dir := writeFiles(c, map[string]string{"entities.go": checkedTables})
 	output, err := hostCommand(c, "schema", "apply", "--db-url", entities, "--root-dir", dir, "--auto-approve")
 	skipOnOldHost(c, output, err, "does not support SchemaDiff.ConstraintsAdded", hostChange)
-	skipOnOldHost(c, output, err, enumRefusal, enumChange)
 	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
 	c.Assert(output, qt.Contains, "\"status\" TEXT NOT NULL DEFAULT 'active' CONSTRAINT \"authors_status_check\" CHECK (status IN ('active', 'retired')),\n"+
 		"  \"score\" BIGINT NOT NULL DEFAULT 0 CONSTRAINT \"authors_score_check\" CHECK (score >= 0),\n"+
