@@ -28,7 +28,7 @@ func TestDescription_ServesMigrationLint(t *testing.T) {
 	for _, rule := range engine.GetLintRules() {
 		published = append(published, rule.GetCode())
 	}
-	c.Assert(published, qt.DeepEquals, []string{"SP101", "SP102"})
+	c.Assert(published, qt.DeepEquals, []string{"data-dependent/set-not-null", "side-effect/drop-row-deletion-policy"})
 }
 
 // A host that lists lint.statement-facts gets what each statement is; one

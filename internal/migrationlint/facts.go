@@ -33,7 +33,7 @@ var StatementFacts = []protocol.LintFact{
 // Spanner refuses it (`Concurrent index creation is not supported in <CREATE
 // INDEX> statement`, measured on the emulator), and the host's capability
 // registry names it, so a host that knows the target's capabilities reports
-// the statement as CAP001, as it did while Spanner was built in.
+// the statement as capability/missing, as it did while Spanner was built in.
 const createIndexConcurrently = "create_index_concurrently"
 
 // Describe returns the statement facts of one statement: its kind, then a
@@ -77,7 +77,8 @@ func kind(class protocol.LintStatementClass, name, object string) Effect {
 }
 
 // schemaKind names a schema statement by its first two words, as the host's
-// SQL004 lists the statements no rule examined: DROP INDEX, CREATE SEQUENCE.
+// coverage/unanalyzed-statements lists the statements no rule examined: DROP
+// INDEX, CREATE SEQUENCE.
 // A modifier between the verb and the object is skipped, so CREATE UNIQUE
 // INDEX is a CREATE INDEX and CREATE OR REPLACE VIEW a CREATE VIEW, and a
 // change stream is named by both its words.

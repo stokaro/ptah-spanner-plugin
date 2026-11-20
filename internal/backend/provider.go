@@ -255,10 +255,11 @@ func engineFeatures() []string {
 	return append(providerFeatures(), provider.LintStatementFactsFeature)
 }
 
-// minimumContract is the oldest contract a host must speak to start the
-// provider, below the one the SDK it is built with speaks (25.41). The
-// additions of contracts 25.28 to 25.41 that it uses are negotiated, and a
-// host that lists none of them is served as before they existed:
+// minimumContract is the oldest minor of contract 26 a host must speak to start
+// the provider. The SDK it is built with speaks 26.0, the first contract that
+// identifies lint rules by name, so a host of contract 25 is refused. The
+// features below are negotiated, and a host that lists none of them is served
+// as before they existed:
 //
 //   - without observed constraints, a read refuses a table's foreign keys and
 //     CHECKs, and comparisons and plans carry none;
@@ -272,16 +273,16 @@ func engineFeatures() []string {
 //     are refused;
 //   - without SQL statement facts, the host refuses a schema document's DROP
 //     VIEW IF EXISTS of a table, which Spanner takes and ignores;
-//   - without removal blockers (contract 25.39), a read reports no change
+//   - without removal blockers, a read reports no change
 //     stream, so a plan may drop a table or a column one names, and the
 //     executor refuses the drop before the run's first statement;
-//   - without not-described kinds (contract 25.41), a read leaves change
+//   - without not-described kinds, a read leaves change
 //     streams out without saying so, and a document made from it does not
 //     say that it does not describe them.
 //
 // The live tests run against such a host and against one that negotiates
 // them. An older host is refused before a session opens.
-const minimumContract = 27
+const minimumContract = 0
 
 // Description declares the provider and the spanner engine.
 func Description() *protocol.Description {

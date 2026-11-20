@@ -5,8 +5,8 @@ import "maps"
 // offlineCapabilities are the capability facts the host plans the spanner
 // engine with when no session states the server's (engine.default-capabilities,
 // contract 25.22): an offline render, a generation without a database, an
-// export, and `ptah sql lint`, whose CAP001 finding for CREATE INDEX
-// CONCURRENTLY reads create_index_concurrently. Release line "0" states the
+// export, and `ptah sql lint`, whose capability/missing finding for CREATE
+// INDEX CONCURRENTLY reads create_index_concurrently. Release line "0" states the
 // same facts, for a --server-version that selects it. A present false is an
 // established answer; the list names every key the host's vocabulary holds.
 //

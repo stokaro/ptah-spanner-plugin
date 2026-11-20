@@ -38,7 +38,7 @@ UPDATE t SET a = 'x' WHERE id = 1;
 ALTER TABLE t RENAME COLUMN a TO aa;
 CREATE VIEW v SQL SECURITY INVOKER AS SELECT id FROM t;
 ALTER TABLE ev DROP TTL;
--- atlas:nolint DS101 BC103
+-- ptah:nolint destructive/drop-table rollout/drop-table
 DROP TABLE nopk;
 DROP TABLE t;
 `,
@@ -105,9 +105,10 @@ func lintFindings(c *qt.C, args ...string) ([]lintFinding, error) {
 
 // The host lints a directory whose files hold rows, a rename and a view: the
 // AnalyzeSQL split refused every statement but the table statements it
-// writes, so the run failed. SET NOT NULL is SP101, in the words PG303 said
-// for Spanner, in an up file. A TTL drop is SP102, where the built-in reported
-// DS102 and BC104 for a column named TTL, which Spanner reserves as a word.
+// writes, so the run failed. SET NOT NULL is data-dependent/set-not-null, in an
+// up file. A TTL drop is side-effect/drop-row-deletion-policy, where the
+// built-in reported destructive/drop-column and rollout/drop-column for a
+// column named TTL, which Spanner reserves as a word.
 // The suppression directive above a statement silences what it names.
 func TestHostLintsMigrationsThroughTheProviderE2E(t *testing.T) {
 	c := testcheck.New(t)
@@ -115,25 +116,25 @@ func TestHostLintsMigrationsThroughTheProviderE2E(t *testing.T) {
 	findings, err := lintReport(c, "migrations", "lint", "--dialect", "spanner", "--dir", dir, "--fail-on", "none")
 	c.Assert(err, qt.IsNil, qt.Commentf("%v", findings))
 	for _, want := range []string{
-		"1700000002_risky.up.sql:1 SP101",
-		"1700000002_risky.up.sql:3 BC101",
-		"1700000002_risky.up.sql:5 SP102",
-		"1700000002_risky.up.sql:8 BC103",
-		"1700000002_risky.up.sql:8 DS101",
+		"1700000002_risky.up.sql:1 data-dependent/set-not-null",
+		"1700000002_risky.up.sql:3 rollout/rename",
+		"1700000002_risky.up.sql:5 side-effect/drop-row-deletion-policy",
+		"1700000002_risky.up.sql:8 rollout/drop-table",
+		"1700000002_risky.up.sql:8 destructive/drop-table",
 	} {
 		c.Assert(findings, qt.Contains, want)
 	}
 	for _, unwanted := range []string{
-		"1700000002_risky.up.sql:5 DS102",
-		"1700000002_risky.up.sql:5 BC104",
-		"1700000002_risky.up.sql:7 DS101",
-		"1700000002_risky.up.sql:7 BC103",
+		"1700000002_risky.up.sql:5 destructive/drop-column",
+		"1700000002_risky.up.sql:5 rollout/drop-column",
+		"1700000002_risky.up.sql:7 destructive/drop-table",
+		"1700000002_risky.up.sql:7 rollout/drop-table",
 	} {
 		c.Assert(findings, qt.Not(qt.Contains), unwanted)
 	}
 }
 
-// A down file is checked too, as PG303 checked one.
+// A down file is checked too.
 func TestHostLintsADownFileThroughTheProviderE2E(t *testing.T) {
 	c := testcheck.New(t)
 	dir := writeFiles(c, map[string]string{
@@ -142,16 +143,17 @@ func TestHostLintsADownFileThroughTheProviderE2E(t *testing.T) {
 	})
 	findings, err := lintReport(c, "migrations", "lint", "--dialect", "spanner", "--dir", dir, "--fail-on", "none")
 	c.Assert(err, qt.IsNil, qt.Commentf("%v", findings))
-	c.Assert(findings, qt.Contains, "1700000001_t.down.sql:1 SP101")
+	c.Assert(findings, qt.Contains, "1700000001_t.down.sql:1 data-dependent/set-not-null")
 }
 
 // `ptah sql lint` reads a Spanner file by the statement facts of the
-// provider's split: a table without a primary key is DDL001, a data statement
-// is SQL002, and CREATE INDEX CONCURRENTLY is CAP001, as the built-in reported
+// provider's split: a table without a primary key is design/no-primary-key, a
+// data statement is coverage/unsupported-statement, and CREATE INDEX
+// CONCURRENTLY is capability/missing, as the built-in reported
 // them. The host answers the capability from the facts the provider states
 // for a command without a server (engine.default-capabilities), the built-in
 // engine's preset. A statement of Spanner's own the built-in grammar refused,
-// such as a bit-reversed sequence, is a statement no rule examined (SQL004)
+// such as a bit-reversed sequence, is a statement no rule examined (coverage/unanalyzed-statements)
 // rather than unsupported SQL.
 func TestHostLintsASQLFileThroughTheProviderE2E(t *testing.T) {
 	c := testcheck.New(t)
@@ -163,7 +165,7 @@ CREATE SEQUENCE s BIT_REVERSED_POSITIVE;
 `}), "wide.sql")
 	findings, err := lintReport(c, "sql", "lint", "--dialect", "spanner", file)
 	c.Assert(err, qt.ErrorMatches, `exit status 1`)
-	c.Assert(findings, qt.DeepEquals, []string{"wide.sql:1 DDL001", "wide.sql:3 SQL002", "wide.sql:4 CAP001", "wide.sql:1 SQL004"})
+	c.Assert(findings, qt.DeepEquals, []string{"wide.sql:1 design/no-primary-key", "wide.sql:3 coverage/unsupported-statement", "wide.sql:4 capability/missing", "wide.sql:1 coverage/unanalyzed-statements"})
 }
 
 // The host lints a SQL file that holds what Spanner reads as PostgreSQL does:
@@ -182,5 +184,5 @@ CREATE TABLE nopk (a bigint);
 `}), "s69.sql")
 	findings, err := lintReport(c, "sql", "lint", "--dialect", "spanner", file)
 	c.Assert(err, qt.ErrorMatches, `exit status 1`)
-	c.Assert(findings, qt.DeepEquals, []string{"s69.sql:2 SQL002", "s69.sql:4 SQL002", "s69.sql:5 DDL001"})
+	c.Assert(findings, qt.DeepEquals, []string{"s69.sql:2 coverage/unsupported-statement", "s69.sql:4 coverage/unsupported-statement", "s69.sql:5 design/no-primary-key"})
 }

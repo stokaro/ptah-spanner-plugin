@@ -38,41 +38,43 @@ type rule struct {
 }
 
 // setNotNullMessage is what Spanner does with SET NOT NULL, in the words the
-// host's PostgreSQL owner reported under PG303 for Spanner while Spanner was
-// built in. Measured on the emulator behind PGAdapter: a row holding NULL
-// fails the schema change with `FAILED_PRECONDITION: Cannot specify a null
-// value for column: a`, and the column stays nullable.
+// host's PostgreSQL owner reported for Spanner while Spanner was built in.
+// Measured on the emulator behind PGAdapter: a row holding NULL fails the
+// schema change with `FAILED_PRECONDITION: Cannot specify a null value for
+// column: a`, and the column stays nullable.
 const setNotNullMessage = "SET NOT NULL runs as a schema change that validates every existing row, and a row holding NULL fails it " +
 	"(FAILED_PRECONDITION: Cannot specify a null value for column) and leaves the column nullable; backfill first"
 
-// dropTTLMessage says what ALTER TABLE ... DROP TTL does. The host's DS102 and
-// BC104 read `DROP <word>` as a column drop, so a TTL drop read as a DROP
-// COLUMN of a column named TTL, which Spanner reserves as a word: a column of
-// that name has to be quoted, and the measured statement keeps every column.
+// dropTTLMessage says what ALTER TABLE ... DROP TTL does. The host's
+// destructive/drop-column and rollout/drop-column rules read `DROP <word>` as a
+// column drop, so a TTL drop read as a DROP COLUMN of a column named TTL, which
+// Spanner reserves as a word: a column of that name has to be quoted, and the
+// measured statement keeps every column.
 const dropTTLMessage = "DROP TTL removes the table's row deletion policy and drops no column; rows the policy would have deleted " +
 	"are kept from now on"
 
-// catalog is every rule the provider publishes, in code order.
+// catalog is every rule the provider publishes, in name order.
 //
-// SP101 is the check the host's PostgreSQL owner made for Spanner as PG303
-// while Spanner was built in. The provider cannot publish PG303 itself: a run
-// whose runtime holds the built-in engines beside this provider would hold two
-// rules of one code, which the host refuses when it builds the runtime.
+// data-dependent/set-not-null is the check the host's PostgreSQL owner made for
+// Spanner while Spanner was built in. The provider cannot publish the host's
+// own name for it, locking/set-not-null: a run whose runtime holds the built-in
+// engines beside this provider would hold two rules of one name, which the host
+// refuses when it builds the runtime.
 func catalog() []rule {
 	return []rule{
 		{
-			Code: "SP101", Title: "not-null validation scans existing rows", Severity: protocol.LintRule_WARNING,
+			Code: "data-dependent/set-not-null", Title: "not-null validation scans existing rows", Severity: protocol.LintRule_WARNING,
 			Statement: func(statement Statement) (bool, string) { return setsNotNull(statement.Words), setNotNullMessage },
 		},
 		{
-			Code: "SP102", Title: "row deletion policy dropped", Severity: protocol.LintRule_INFO,
-			Subsumes:  []string{"BC104", "DS102"},
+			Code: "side-effect/drop-row-deletion-policy", Title: "row deletion policy dropped", Severity: protocol.LintRule_INFO,
+			Subsumes:  []string{"rollout/drop-column", "destructive/drop-column"},
 			Statement: func(statement Statement) (bool, string) { return dropsTTL(statement.Words), dropTTLMessage },
 		},
 	}
 }
 
-// Rules returns the rule catalog the provider publishes, in code order. Each
+// Rules returns the rule catalog the provider publishes, in name order. Each
 // call returns fresh values.
 func Rules() []*protocol.LintRule {
 	all := catalog()
@@ -115,7 +117,7 @@ func Check(ctx context.Context, codes []string, files []File) ([]Finding, error)
 }
 
 // setsNotNull reports an ALTER TABLE with a clause that sets a column NOT
-// NULL: ALTER [COLUMN] name ... SET NOT NULL, as the host's PG303 read one.
+// NULL: ALTER [COLUMN] name ... SET NOT NULL, as the host's PostgreSQL owner read one.
 func setsNotNull(words []string) bool {
 	if !hasPrefix(words, "ALTER", "TABLE") {
 		return false
