@@ -88,7 +88,7 @@ func TestAnnotateRequest_HappyPath(t *testing.T) {
 func TestCheckRequest_HappyPath(t *testing.T) {
 	c := testcheck.New(t)
 	result, err := migrationlint.CheckRequest(context.Background(), &protocol.CheckLintRequest{
-		Engine: "spanner", Codes: []string{"SP101"},
+		Engine: "spanner", Codes: []string{"data-dependent/set-not-null"},
 		Files: []*protocol.LintFile{
 			{Name: "1_a.up.sql", Up: true, Statements: []*protocol.LintStatement{{Words: []string{"DROP", "TABLE", "T"}}}},
 			{Name: "1_a.down.sql", Down: true, Statements: []*protocol.LintStatement{
@@ -98,7 +98,7 @@ func TestCheckRequest_HappyPath(t *testing.T) {
 	})
 	c.Assert(err, qt.IsNil)
 	c.Assert(result, qt.CmpEquals(protocmp.Transform()), &protocol.CheckedLint{Complete: true, Findings: []*protocol.LintFinding{
-		{Code: "SP101", File: 1, Statement: 0, Message: "SET NOT NULL runs as a schema change that validates every existing row, and a row holding NULL fails it " +
+		{Code: "data-dependent/set-not-null", File: 1, Statement: 0, Message: "SET NOT NULL runs as a schema change that validates every existing row, and a row holding NULL fails it " +
 			"(FAILED_PRECONDITION: Cannot specify a null value for column) and leaves the column nullable; backfill first"},
 	}})
 }

@@ -22,8 +22,8 @@ sourceOfTruth:
 generated: false
 searchAliases:
   - "Spanner migration lock"
-  - "SP101"
-  - "SP102"
+  - "data-dependent/set-not-null"
+  - "side-effect/drop-row-deletion-policy"
 overlaps: []
 disposition: keep
 sidebar:
@@ -207,27 +207,29 @@ adds its own rules:
 
 | Rule | Severity | Finding |
 | --- | --- | --- |
-| `SP101` | warning | `SET NOT NULL` validates every existing row, and a row holding NULL fails the schema change and leaves the column nullable |
-| `SP102` | info | `ALTER TABLE ... DROP TTL` drops the row deletion policy and no column; it replaces the `DS102` and `BC104` findings, which read the statement as a drop of a column named `TTL` |
+| `data-dependent/set-not-null` | warning | `SET NOT NULL` validates every existing row, and a row holding NULL fails the schema change and leaves the column nullable |
+| `side-effect/drop-row-deletion-policy` | info | `ALTER TABLE ... DROP TTL` drops the row deletion policy and no column; it replaces the `destructive/drop-column` and `rollout/drop-column` findings, which read the statement as a drop of a column named `TTL` |
 
 For a migration that holds `ALTER TABLE events ALTER COLUMN note SET NOT NULL;`
 and `ALTER TABLE events DROP TTL;`, the two findings read:
 
 ```text
-lint/2_tighten.up.sql:1 [warning] SP101: SET NOT NULL runs as a schema change that validates every existing row, and a row holding NULL fails it (FAILED_PRECONDITION: Cannot specify a null value for column) and leaves the column nullable; backfill first (not-null validation scans existing rows)
-lint/2_tighten.up.sql:2 [info] SP102: DROP TTL removes the table's row deletion policy and drops no column; rows the policy would have deleted are kept from now on (row deletion policy dropped)
+lint/2_tighten.up.sql:1 [warning] data-dependent/set-not-null: SET NOT NULL runs as a schema change that validates every existing row, and a row holding NULL fails it (FAILED_PRECONDITION: Cannot specify a null value for column) and leaves the column nullable; backfill first (not-null validation scans existing rows)
+lint/2_tighten.up.sql:2 [info] side-effect/drop-row-deletion-policy: DROP TTL removes the table's row deletion policy and drops no column; rows the policy would have deleted are kept from now on (row deletion policy dropped)
 ```
 
-Select the rule as `SP101`. Atlas's `MF104` in `--disable` reaches `SP101`, as
-it reaches PostgreSQL's `PG303`. A directive names the rule as `SP101`:
-`-- atlas:nolint MF104` silences neither `SP101` nor `PG303`. `--disable PG303`,
-the code PostgreSQL's `SET NOT NULL` check carries, is refused on a Spanner run
-with `rule selector "PG303" does not match any registered rule`.
+Select the rule by its name, `--disable data-dependent/set-not-null`, or by its
+category, `--disable data-dependent`. A directive names it the same way:
+`-- ptah:nolint data-dependent/set-not-null`. The PostgreSQL rule for the same
+statement, `locking/set-not-null`, belongs to PostgreSQL, so `--disable
+locking/set-not-null` and `-- ptah:nolint locking/set-not-null` are refused on a
+Spanner run as not naming a rule of the run. A code such as `MF104` is not a
+rule name and is refused as well.
 
 `ptah sql lint` learns from the provider what each statement is: a table created
-without a primary key (`DDL001`), a statement it does not lint, such as an
-`INSERT` (`SQL002`), and `CREATE INDEX CONCURRENTLY`, which Spanner refuses
-(`CAP001`). A text the provider cannot read, such as one with a dollar-quoted
+without a primary key (`design/no-primary-key`), a statement it does not lint,
+such as an `INSERT` (`coverage/unsupported-statement`), and `CREATE INDEX
+CONCURRENTLY`, which Spanner refuses (`capability/missing`). A text the provider cannot read, such as one with a dollar-quoted
 string, fails the run with the reason.
 
 ## Seeds and check assertions

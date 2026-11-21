@@ -23,7 +23,7 @@ const (
 // A statement is classified as the host's built-in Spanner path of `ptah sql
 // lint` classified it: tables by name, other schema statements by their first
 // two words, everything else by its first word; a table without a primary key
-// is named as written, as that path's DDL001 named it.
+// is named as written, as design/no-primary-key named it.
 func TestDescribe_HappyPath(t *testing.T) {
 	tests := []struct {
 		name, sql string

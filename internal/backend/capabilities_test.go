@@ -47,8 +47,8 @@ func TestDescription_StatesTheOfflineCapabilities(t *testing.T) {
 }
 
 // Spanner refuses CREATE INDEX CONCURRENTLY, and the offline facts say so as
-// an established false, so `ptah sql lint --dialect spanner` reports CAP001
-// for the statement without a server.
+// an established false, so `ptah sql lint --dialect spanner` reports
+// capability/missing for the statement without a server.
 func TestDescription_EstablishesThatConcurrentIndexesAreRefused(t *testing.T) {
 	c := testcheck.New(t)
 	listed := provider.NegotiatedDescription(backend.Description(), []string{provider.DefaultCapabilitiesFeature})

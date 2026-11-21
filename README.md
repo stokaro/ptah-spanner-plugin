@@ -245,19 +245,21 @@ says how a release is chosen, what is checked and where the file is stored.
   lint --dialect spanner` read a file through the provider's split, which takes
   every statement a migration holds, and Ptah's rules for every engine run over
   it. The provider adds its own rules:
-  - `SP101` (warning): `SET NOT NULL` validates every existing row, and a row
-    holding NULL fails the schema change. Ptah's built-in Spanner engine
-    reported this as `PG303`. Select it as `SP101`, or as Atlas's `MF104` in
-    `--disable`; `--disable PG303` matches no rule of a Spanner run.
-  - `SP102` (info): `ALTER TABLE ... DROP TTL` drops the row deletion policy
-    and no column. It replaces the `DS102` and `BC104` findings Ptah reports
+  - `data-dependent/set-not-null` (warning): `SET NOT NULL` validates every
+    existing row, and a row holding NULL fails the schema change. Ptah's
+    built-in Spanner engine reported this as `locking/set-not-null`. Select it
+    by its name or by its category, `data-dependent`; `--disable
+    locking/set-not-null` matches no rule of a Spanner run.
+  - `side-effect/drop-row-deletion-policy` (info): `ALTER TABLE ... DROP TTL`
+    drops the row deletion policy and no column. It replaces the
+    `destructive/drop-column` and `rollout/drop-column` findings Ptah reports
     for the statement otherwise, which read it as a drop of a column named
     `TTL`.
 
   `ptah sql lint` learns from the provider what each statement is: a table
-  created without a primary key (`DDL001`), a statement it does not lint, such
-  as an `INSERT` (`SQL002`), and `CREATE INDEX CONCURRENTLY`, which Spanner
-  refuses (`CAP001`). A text the provider cannot read, such as one with a
+  created without a primary key (`design/no-primary-key`), a statement it does
+  not lint, such as an `INSERT` (`coverage/unsupported-statement`), and `CREATE
+  INDEX CONCURRENTLY`, which Spanner refuses (`capability/missing`). A text the provider cannot read, such as one with a
   dollar-quoted string, fails the run with the reason.
 - **Dev databases.** Ptah rehearses a plan on a dev database (`schema apply
   --dev-url`) and replays a migration directory on one (`migrations generate
@@ -339,11 +341,11 @@ ptah schema apply --db-url 'spanner://localhost:5432/app?sslmode=disable' \
 
 ## Build and test
 
-The module pins the published SDK, `ptah.run/provider-sdk`, by tag: v0.40.0,
-which speaks provider contract 25.41. It needs neither the Ptah
+The module pins the published SDK, `ptah.run/provider-sdk`, by tag: v0.45.0,
+which speaks provider contract 26.0. It needs neither the Ptah
 source nor a local SDK checkout and has no `replace` directive. The provider
-starts on a Ptah of contract 25.27 or a later minor of 25, and serves an older
-minor without the additions it does not list;
+starts on a Ptah of contract 26.0 or a later minor of 26, and serves a host
+without the additions it does not list;
 [What the provider needs from Ptah](docs/usage.md#what-the-provider-needs-from-ptah)
 says which service needs which.
 

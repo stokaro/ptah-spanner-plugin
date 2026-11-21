@@ -41,8 +41,8 @@ func TestHostLintsTheStatementsSpannerTakesE2E(t *testing.T) {
 	findings, err := lintMessages(c, "sql", "lint", "--dialect", "spanner", file)
 	c.Assert(err, qt.ErrorMatches, `exit status 1`)
 	c.Assert(findings, qt.DeepEquals, []string{
-		"read.sql:4 SQL002 error: ptah sql lint does not lint TRUNCATE statements yet",
-		"read.sql:1 SQL004 info: no rule examined DROP VIEW, DROP SEQUENCE in this file",
+		"read.sql:4 coverage/unsupported-statement error: ptah sql lint does not lint TRUNCATE statements yet",
+		"read.sql:1 coverage/unanalyzed-statements info: no rule examined DROP VIEW, DROP SEQUENCE in this file",
 	})
 
 	execSQL(c, address, readStatements...)
@@ -60,8 +60,8 @@ var refusedStatements = []string{"DROP VIEW v1_f, v2_f", "DROP TRIGGER g_f", "DR
 // by its opening words, without an error. The provider's split does not parse
 // Spanner's grammar, so it cannot tell a statement Spanner refuses from one
 // it takes, and a clean result says the file was read, not that Spanner will
-// run it. Ptah's built-in Spanner engine reported an error for each, SQL001
-// or SQL002, from the host's PostgreSQL grammar, which also refused
+// run it. Ptah's built-in Spanner engine reported an error for each, correctness/syntax-error
+// or coverage/unsupported-statement, from the host's PostgreSQL grammar, which also refused
 // statements Spanner takes, such as a bit-reversed sequence (stokaro/ptah#4204
 // S69).
 func TestHostLintsTheStatementsSpannerRefusesE2E(t *testing.T) {
@@ -77,7 +77,7 @@ func TestHostLintsTheStatementsSpannerRefusesE2E(t *testing.T) {
 	findings, err := lintMessages(c, "sql", "lint", "--dialect", "spanner", file)
 	c.Assert(err, qt.IsNil, qt.Commentf("%v", findings))
 	c.Assert(findings, qt.DeepEquals, []string{
-		"refused.sql:1 SQL004 info: no rule examined DROP VIEW, DROP TRIGGER, DROP MATERIALIZED, DROP TABEL in this file",
+		"refused.sql:1 coverage/unanalyzed-statements info: no rule examined DROP VIEW, DROP TRIGGER, DROP MATERIALIZED, DROP TABEL in this file",
 	})
 	c.Assert(queryRows(c, address, `SELECT table_name FROM information_schema.views WHERE table_schema = 'public' ORDER BY table_name`), qt.DeepEquals,
 		[]string{"v1_f", "v2_f"})

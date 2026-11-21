@@ -116,8 +116,9 @@ A successful check reports `"status": "compatible"`. A command then takes
 
 ### What the provider needs from Ptah
 
-The provider starts on a Ptah of provider contract 25.27 or a later minor
-version of contract 25.
+The provider starts on a Ptah of provider contract 26.0 or a later minor
+version of contract 26. A Ptah of contract 25 does not start it, because
+contract 26 identifies lint rules by name.
 Some of what these pages describe needs more:
 
 | Service | Needs |
